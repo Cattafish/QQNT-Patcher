@@ -1,0 +1,1414 @@
+
+============================================================
+【文本文件内容】路径: app/qqPatch/patcher.py
+============================================================
+
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import shutil
+import zipfile
+import subprocess
+import re
+import shlex
+import urllib.request
+from rules import RULES, init_dynamic_rules
+
+TOOLS_DIR = os.path.abspath("./tools")
+BAKSMALI_JAR = os.path.join(TOOLS_DIR, "baksmali.jar")
+SMALI_JAR = os.path.join(TOOLS_DIR, "smali.jar")
+
+def log(tag, msg):
+    colors = {
+        "INFO": "\033[1;34m[INFO]\033[0m",
+        "OK": "\033[1;32m[SUCCESS]\033[0m",
+        "WARN": "\033[1;33m[WARN]\033[0m",
+        "ERR": "\033[1;31m[ERROR]\033[0m"
+    }
+    print(f"{colors.get(tag, '[*]')} {msg}")
+
+def run_cmd(cmd, cwd=None):
+    ret = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    if ret.returncode != 0:
+        log("ERR", f"命令执行失败: {cmd}")
+        log("ERR", ret.stderr.decode('utf-8', errors='ignore'))
+        sys.exit(1)
+    return ret.stdout.decode('utf-8', errors='ignore')
+
+def download_file(url, path):
+    log("INFO", f"正在下载组件: {os.path.basename(path)} ...")
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as response, open(path, 'wb') as out_file:
+        shutil.copyfileobj(response, out_file)
+
+def ensure_smali_jars():
+    os.makedirs(TOOLS_DIR, exist_ok=True)
+    urls = {
+        BAKSMALI_JAR: [
+            "https://ghproxy.net/https://github.com/baksmali/smali/releases/download/v3.0.8/baksmali-3.0.8-fat.jar",
+            "https://github.com/baksmali/smali/releases/download/v3.0.8/baksmali-3.0.8-fat.jar",
+            "https://bitbucket.org/JesusFreke/smali/downloads/baksmali-2.5.2.jar"
+        ],
+        SMALI_JAR: [
+            "https://ghproxy.net/https://github.com/baksmali/smali/releases/download/v3.0.8/smali-3.0.8-fat.jar",
+            "https://github.com/baksmali/smali/releases/download/v3.0.8/smali-3.0.8-fat.jar",
+            "https://bitbucket.org/JesusFreke/smali/downloads/smali-2.5.2.jar"
+        ]
+    }
+    for jar_path, mirrors in urls.items():
+        if not os.path.exists(jar_path):
+            success = False
+            for url in mirrors:
+                try:
+                    download_file(url, jar_path)
+                    if os.path.exists(jar_path) and os.path.getsize(jar_path) > 100000:
+                        success = True
+                        log("OK", f"下载完成: {os.path.basename(jar_path)}")
+                        break
+                except Exception:
+                    if os.path.exists(jar_path):
+                        os.remove(jar_path)
+            if not success:
+                log("ERR", f"自动下载 {os.path.basename(jar_path)} 失败，请检查网络或手动下载放入 {TOOLS_DIR} 目录")
+                sys.exit(1)
+
+def get_baksmali_cmd():
+    if shutil.which("baksmali"):
+        return "baksmali"
+    ensure_smali_jars()
+    return f"java -jar {shlex.quote(BAKSMALI_JAR)}"
+
+def get_smali_cmd():
+    if shutil.which("smali"):
+        return "smali"
+    ensure_smali_jars()
+    return f"java -jar {shlex.quote(SMALI_JAR)}"
+
+def compile_helper_dex(work_dir):
+    src_dir = "./src"
+    if not os.path.exists(src_dir):
+        log("WARN", "未检测到 src/ 源码目录，跳过 Helper Dex 编译")
+        return None
+
+    log("INFO", "1. 正在编译 src/ 目录下的 Java 源码...")
+    bin_dir = os.path.join(work_dir, "bin")
+    dex_out = os.path.join(work_dir, "dex_out")
+    os.makedirs(bin_dir, exist_ok=True)
+    os.makedirs(dex_out, exist_ok=True)
+
+    java_files = []
+    for root, _, files in os.walk(src_dir):
+        for f in files:
+            if f.endswith(".java"):
+                java_files.append(os.path.join(root, f))
+
+    if not java_files:
+        log("WARN", "src/ 下没有 .java 文件，跳过编译")
+        return None
+
+    quoted_java = [shlex.quote(f) for f in java_files]
+    run_cmd(f"javac -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
+    
+    patch_classes = []
+    for root, _, files in os.walk(os.path.join(bin_dir, "com/tencent/qqnt/patch")):
+        for f in files:
+            if f.endswith(".class"):
+                patch_classes.append(os.path.join(root, f))
+
+    if not patch_classes:
+        patch_classes = [bin_dir]
+
+    quoted_classes = [shlex.quote(f) for f in patch_classes]
+    run_cmd(f"d8 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes))
+    
+    target_dex = os.path.join(dex_out, "classes.dex")
+    if os.path.exists(target_dex):
+        log("OK", "Helper Dex 编译成功！")
+        return target_dex
+    return None
+
+def apply_patch_to_smali(smali_path, rule):
+    with open(smali_path, "r", encoding="utf-8") as f:
+        code = f.read()
+
+    method_name = rule["target_method"]
+    patch_type = rule["type"]
+    patch_smali = rule["smali"].strip()
+
+    escaped_method = re.escape(method_name)
+    pattern = re.compile(rf'(\.method[^\n]*\s+{escaped_method}.*?\.end method)', re.DOTALL)
+
+    if not pattern.search(code):
+        log("ERR", f"在 {os.path.basename(smali_path)} 中未找到目标方法: {method_name}")
+        return False
+
+    if patch_type == "REPLACE":
+        code = pattern.sub(patch_smali, code)
+    elif patch_type == "INSERT_BEFORE":
+        def repl(match):
+            m_body = match.group(1)
+            header_match = re.search(r'(\.registers\s+\d+|\.locals\s+\d+)', m_body)
+            if header_match:
+                idx = header_match.end()
+                return m_body[:idx] + "\n" + patch_smali + "\n" + m_body[idx:]
+            return m_body
+        code = pattern.sub(repl, code)
+    elif patch_type == "REGEX_REPLACE":
+        regex_pattern = rule["regex"]
+        def repl_regex(match):
+            m_body = match.group(1)
+            return re.sub(regex_pattern, patch_smali, m_body)
+        code = pattern.sub(repl_regex, code)
+
+    with open(smali_path, "w", encoding="utf-8") as f:
+        f.write(code)
+    
+    log("OK", f"  ✔ 成功应用规则: [{rule['name']}]")
+    return True
+
+def main():
+    input_apk = sys.argv[1] if len(sys.argv) > 1 else "QQ.apk"
+    output_apk = sys.argv[2] if len(sys.argv) > 2 else "QQ_Patched.apk"
+
+    if not os.path.exists(input_apk):
+        log("ERR", f"未找到输入 APK 文件: {input_apk}")
+        sys.exit(1)
+
+    work_dir = "./build_cache"
+    if os.path.exists(work_dir):
+        shutil.rmtree(work_dir)
+    os.makedirs(work_dir, exist_ok=True)
+
+    baksmali_bin = get_baksmali_cmd()
+    smali_bin = get_smali_cmd()
+
+    helper_dex_path = compile_helper_dex(work_dir)
+
+    # 动态扫描注入规则 (如设置中心自适应)
+    log("INFO", "2. 正在动态探测自适应规则...")
+    dynamic_rules = init_dynamic_rules(input_apk, baksmali_bin, work_dir)
+    for dr in dynamic_rules:
+        log("OK", f"-> 动态规则注入: [{dr['name']}] => 类: {dr['target_class']}")
+        RULES.append(dr)
+
+    log("INFO", f"3. 正在扫描 {input_apk} 结构与 Dex 分包...")
+    dex_list = []
+    with zipfile.ZipFile(input_apk, 'r') as zf:
+        for name in zf.namelist():
+            if re.match(r'^classes\d*\.dex$', name):
+                dex_list.append(name)
+
+    def dex_index(name):
+        if name == "classes.dex": return 1
+        m = re.match(r'classes(\d+)\.dex', name)
+        return int(m.group(1)) if m else 0
+
+    dex_list.sort(key=dex_index)
+    max_idx = dex_index(dex_list[-1])
+    next_dex_name = f"classes{max_idx + 1}.dex"
+    log("INFO", f"-> 现有 {len(dex_list)} 个 Dex (最大为 classes{max_idx}.dex)，新增 Dex 分配为: {next_dex_name}")
+
+    log("INFO", "4. 正在定位规则目标所在的 Dex 分包...")
+    dex_to_rules = {}
+
+    with zipfile.ZipFile(input_apk, 'r') as zf:
+        for dex_name in dex_list:
+            content = zf.read(dex_name)
+            for rule in RULES:
+                cls_bytes = rule["target_class"].encode('utf-8')
+                if cls_bytes in content:
+                    dex_to_rules.setdefault(dex_name, []).append(rule)
+
+    if not dex_to_rules:
+        log("ERR", "所有规则中的目标类均未在 APK 中找到！")
+        sys.exit(1)
+
+    for d_name, r_list in dex_to_rules.items():
+        log("INFO", f"-> 分包 [{d_name}] 命中 {len(r_list)} 条修改规则")
+
+    modified_dex_files = []
+    with zipfile.ZipFile(input_apk, 'r') as zf:
+        for dex_name, r_list in dex_to_rules.items():
+            log("INFO", f"5. 正在处理分包: {dex_name} ...")
+            dex_raw_path = os.path.join(work_dir, dex_name)
+            with open(dex_raw_path, "wb") as f:
+                f.write(zf.read(dex_name))
+
+            smali_out = os.path.join(work_dir, f"smali_{dex_name}")
+            run_cmd(f"{baksmali_bin} d {shlex.quote(dex_raw_path)} -o {shlex.quote(smali_out)}")
+
+            for rule in r_list:
+                cls_path = rule["target_class"][1:-1] + ".smali"
+                full_smali_path = os.path.join(smali_out, cls_path)
+                if os.path.exists(full_smali_path):
+                    apply_patch_to_smali(full_smali_path, rule)
+
+            patched_dex = os.path.join(work_dir, f"patched_{dex_name}")
+            run_cmd(f"{smali_bin} a {shlex.quote(smali_out)} -o {shlex.quote(patched_dex)}")
+            modified_dex_files.append((patched_dex, dex_name))
+
+    log("INFO", "6. 正在注入已修补的 Dex、新增的 Helper Dex 以及 Assets 资源...")
+    shutil.copyfile(input_apk, output_apk)
+
+    inject_dir = os.path.join(work_dir, "inject")
+    os.makedirs(inject_dir, exist_ok=True)
+
+    zip_args = []
+    for local_path, in_zip_name in modified_dex_files:
+        target_in_dir = os.path.join(inject_dir, in_zip_name)
+        shutil.copyfile(local_path, target_in_dir)
+        zip_args.append(shlex.quote(in_zip_name))
+
+    if helper_dex_path:
+        target_helper = os.path.join(inject_dir, next_dex_name)
+        shutil.copyfile(helper_dex_path, target_helper)
+        zip_args.append(shlex.quote(next_dex_name))
+
+    # 注入 assets/zzz_icon.png 自定义图标
+    asset_file = "assets/zzz_icon.png"
+    if os.path.exists(asset_file):
+        log("INFO", f"-> 检测到自定义图标 {asset_file}，正在打包注入...")
+        target_asset = os.path.join(inject_dir, "assets", "zzz_icon.png")
+        os.makedirs(os.path.dirname(target_asset), exist_ok=True)
+        shutil.copyfile(asset_file, target_asset)
+        zip_args.append(shlex.quote("assets/zzz_icon.png"))
+
+    out_apk_abs = os.path.abspath(output_apk)
+    run_cmd(f"cd {shlex.quote(inject_dir)} && zip -q -u {shlex.quote(out_apk_abs)} " + " ".join(zip_args))
+
+    log("INFO", "7. 正在对 APK 进行签名 ...")
+    keystore = os.path.join(work_dir, "debug.keystore")
+    if not os.path.exists(keystore):
+        run_cmd(f"keytool -genkey -v -keystore {shlex.quote(keystore)} -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname 'CN=Android Debug,O=Android,C=US'")
+
+    run_cmd(f"apksigner sign --ks {shlex.quote(keystore)} --ks-pass pass:android --key-pass pass:android {shlex.quote(output_apk)}")
+
+    shutil.rmtree(work_dir)
+    log("OK", f"🎉 全部完成！输出文件: {output_apk}")
+
+if __name__ == "__main__":
+    main()
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/rules.py
+============================================================
+
+# -*- coding: utf-8 -*-
+"""
+Patch 规则定义文件
+"""
+
+import zipfile
+import os
+import subprocess
+import re
+import shutil
+
+RULES = [
+    {
+        "name": "防撤回核心拦截 (onMsfPush)",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;",
+        "target_method": "onMsfPush(Ljava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V",
+        "type": "REPLACE",
+        "smali": """
+.method public onMsfPush(Ljava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V
+    .registers 10
+
+    # === [AntiRevoke Patch] ===
+    invoke-static {p0, p1, p2}, Lcom/tencent/qqnt/patch/AntiRevokeHelper;->handleMsfPush(Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession;Ljava/lang/String;[B)[B
+    move-result-object p2
+
+    if-nez p2, :cond_pass
+    return-void
+
+    :cond_pass
+    iget-wide v1, p0, Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;->nativeRef:J
+    move-object v0, p0
+    move-object v3, p1
+    move-object v4, p2
+    move-object v5, p3
+    invoke-direct/range {v0 .. v5}, Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;->native_onMsfPush(JLjava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V
+    return-void
+.end method
+"""
+    }
+]
+
+def get_dynamic_setting_rule(apk_path, tools_dir="tools", tmp_dir="build"):
+    """
+    动态扫描 APK，获取当前版本的设置中心混淆类名，并自动生成 Patch 规则
+    """
+    print("[*] 正在全局扫描 APK 寻找设置中心特征 (纯内存极速定位)...")
+    config_dex = None
+    item_dex = None
+    
+    with zipfile.ZipFile(apk_path, 'r') as z:
+        dex_files = [f for f in z.namelist() if f.startswith('classes') and f.endswith('.dex')]
+        for dex in dex_files:
+            data = z.read(dex)
+            if b'Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;' in data:
+                config_dex = dex
+            if b'"SimpleItemProcessor"' in data:
+                item_dex = dex
+                
+    if not config_dex or not item_dex:
+        print("[-] 未能在 Dex 中匹配到设置中心特征，可能包不完整。")
+        return None
+        
+    print(f"[+] 命中特征: Config 位于 {config_dex}, Item 位于 {item_dex}")
+    
+    baksmali_jar = os.path.join(tools_dir, "baksmali.jar")
+    smali_out_dir = os.path.join(tmp_dir, "dynamic_scan_smali")
+    os.makedirs(smali_out_dir, exist_ok=True)
+    
+    target_dexes = set([config_dex, item_dex])
+    with zipfile.ZipFile(apk_path, 'r') as z:
+        for dex in target_dexes:
+            z.extract(dex, tmp_dir)
+            dex_path = os.path.join(tmp_dir, dex)
+            # 反编译获取文本
+            subprocess.run(['java', '-jar', baksmali_jar, 'd', dex_path, '-o', smali_out_dir], check=True)
+            
+    config_class = None
+    target_method = None
+    item_class = None
+    
+    for root, dirs, files in os.walk(smali_out_dir):
+        for f in files:
+            if not f.endswith('.smali'): continue
+            path = os.path.join(root, f)
+            with open(path, 'r', encoding='utf-8') as file:
+                content = file.read()
+                
+                if '"SimpleItemProcessor"' in content and not item_class:
+                    m = re.search(r'\.class.+?(L[\w/]+;)', content)
+                    if m:
+                        item_class = m.group(1).replace('/', '.')[1:-1]
+                        
+                if 'Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;' in content and not config_class:
+                    m_class = re.search(r'\.class.+?(Lcom/tencent/mobileqq/setting/main/[\w/]+;)', content)
+                    if m_class:
+                        config_class = m_class.group(1)
+                    m_method = re.search(r'\.method.+?(\w+)\(Landroid/content/Context;\)Ljava/util/List;', content)
+                    if m_method:
+                        target_method = f"{m_method.group(1)}(Landroid/content/Context;)Ljava/util/List;"
+
+    # 清理临时扫描文件
+    shutil.rmtree(smali_out_dir, ignore_errors=True)
+    for dex in target_dexes:
+        os.remove(os.path.join(tmp_dir, dex))
+    
+    if config_class and target_method and item_class:
+        print(f"[+] 动态算号成功！\n    Config类: {config_class}\n    注入方法: {target_method}\n    Item类: {item_class}")
+        
+        # 利用正则的 \1 和 \2 动态补全，把我们的 Java 调用插进去
+        smali_hook = f"""
+    const-string p0, "{item_class}"
+    invoke-static {{p1, \\2, p0}}, Lcom/tencent/qqnt/patch/SettingInjector;->inject(Landroid/content/Context;Ljava/util/List;Ljava/lang/String;)V
+    \\1"""
+        return {
+            "name": "设置中心动态注入 (支持自定义 assets 图标)",
+            "target_class": config_class,
+            "target_method": target_method,
+            "type": "REGEX_REPLACE", 
+            "regex": r"(return-object\s+([vp]\d+))",
+            "replace_with": smali_hook
+        }
+    return None
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/scan_files.py
+============================================================
+
+import os
+
+def scan_and_merge():
+    # 1. 路径设置：向上跳转，定位到模块根目录 app/zzz
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    # 目标定位到 app/zzz 这一级，这样就能涵盖【上一级】和【src同级】
+    target_root = os.path.normpath(os.path.join(base_dir, "."))
+    output_file = os.path.join(base_dir, "merged_qqntpatch.txt")
+
+    # 2. 定义规则
+    text_extensions = {'.js', '.kt', '.java', '.xml', '.gradle', '.md', '.pro', '.cpp', '.h', '.proto', '.properties', '.yml', '.py'}
+    image_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.ico'}
+    
+    # 忽略这些文件夹，防止扫描到成千上万个编译后的垃圾文件
+    ignore_dirs = {'.gradle', '.idea', 'build', 'bin', 'gen', 'out', 'gradle'}
+
+    if not os.path.exists(target_root):
+        print(f"错误: 找不到目录 {target_root}")
+        return
+
+    print(f"正在全量雷达扫描: {target_root}")
+    print(f"结果将保存至: {output_file}")
+
+    with open(output_file, 'w', encoding='utf-8') as f_out:
+        for root, dirs, files in os.walk(target_root):
+            # 过滤忽略目录
+            dirs[:] = [d for d in dirs if d not in ignore_dirs]
+
+            # 获取当前文件夹相对于根目录的深度
+            # '' 表示 target_root 本身
+            # 'app' 表示 target_root/app
+            rel_dir = os.path.relpath(root, target_root)
+            
+            # 【核心逻辑控制】:
+            # 如果不是 src 目录及其子目录，且不是根目录或 app 目录，则不递归进入其子文件夹
+            # 这样可以实现你要求的“上一级单层扫描”和“同级单层扫描”
+            # 但 src 内部我们依然保持深度扫描以获取所有代码
+            if rel_dir != "." and "src" not in rel_dir and rel_dir != "app":
+                # 只有 src 目录下才允许继续往下走，其他的只看当前层文件
+                pass 
+
+            for file in files:
+                file_path = os.path.join(root, file)
+                # 计算输出的显示路径
+                display_path = os.path.relpath(file_path, os.path.join(target_root, "..", ".."))
+                ext = os.path.splitext(file)[1].lower()
+
+                # 情况 A: 文本文件
+                if ext in text_extensions:
+                    f_out.write("\n" + "="*60 + "\n")
+                    f_out.write(f"【文本文件内容】路径: {display_path}\n")
+                    f_out.write("="*60 + "\n\n")
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f_in:
+                            f_out.write(f_in.read())
+                    except Exception as e:
+                        f_out.write(f"[读取失败: {str(e)}]\n")
+                    f_out.write("\n\n")
+
+                # 情况 B: 图片文件
+                elif ext in image_extensions:
+                    f_out.write(f"\n【图片文件路径】: {display_path}\n")
+
+    print("扫描完成")
+
+if __name__ == "__main__":
+    scan_and_merge()
+    
+    
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/README.md
+============================================================
+
+# QQNT-Patcher
+
+针对 Android QQNT 的自动化静态 Patch 工具。通过分析并修改 APK 内的目标 Dex 字节码、追加独立扩展 Dex 的方式实现功能扩展。
+
+## 为什么采用静态 Patch
+
+相比传统的 LSPosed / Xposed 动态 Hook 方案，本项目采用直接修改 Dex 的静态补丁方案：
+
+1. 规避 Hook 特征检测
+   动态 Hook 框架（如 Xposed/LSPosed）通常会在内存映射（/proc/self/maps）、堆栈调用、ClassLoader 以及 ART 方法入口留下明显痕迹，容易被特征扫描识别。静态 Patch 将逻辑直接固化在 Dex 字节码中，运行时与原生代码无异，不包含任何 Hook 框架特征。
+2. 运行稳定与免 Root
+   无需 Root 权限，不需要依赖 VirtualXposed、两面宿傩等虚拟环境容器，重签名后即可直接在普通系统上安装运行。所有逻辑在主进程原生执行，不存在跨进程 Binder 转发开销或掉 Hook 问题。
+3. 极速增量修补
+   采用单 Dex 快速索引与局部修补机制。工具仅对包含目标类的单一 Dex 执行反编译和汇编，避免了使用 Apktool 对 300MB+ 安装包进行全量反编译的漫长耗时，整个 Patch 流程通常在 5~10 秒内完成。
+
+## 当前实现的功能
+
+1. 消息防撤回与后台同步保护
+   - 实时推送拦截：拦截私聊和群聊的实时撤回指令（MsgPush）。
+   - 同步数据过滤：针对下拉刷新以及后台唤醒时的同步数据包（InfoSyncPush）进行树形递归过滤，仅剥离其中的撤回指令，完整保留 sync_cookie 等同步游标，避免本地消息被服务端覆盖删除。
+   - 自身操作放行：当前账号自己在其他设备或本设备发起的撤回操作正常生效，不生成多余提示。
+2. 富文本灰条与交互
+   - 提取撤回操作人的真实 UID 与群名片/昵称。
+   - 撤回人名字带有超链接样式，点击可直接打开对方个人资料卡。
+   - 提取原消息的真实序号（msgSeq），点击提示中的“一条消息”可平滑滚动并高亮定位原消息。
+3. 自动化修补框架
+   - 自动扫描全包 Dex，定位目标类所在的分包。
+   - 自动编译 src 目录下的 Java 源码为独立扩展 Dex 并追加到 APK 尾部（如 classes38.dex）。
+   - 自动完成单 Dex 替换、无损压缩打包、zipalign 对齐与重签名。
+
+## 项目结构
+
+```text
+QQNT-Patcher/
+├── src/                  # 扩展功能的 Java 源码与编译桩 (Stub)
+│   └── com/tencent/qqnt/
+│       └── patch/        # 核心逻辑 (AntiRevokeHelper.java 等)
+├── tools/                # 自动依赖的 smali / baksmali 工具
+├── rules.py              # 声明式 Hook 规则配置
+├── patcher.py            # 核心自动化 Patch 执行脚本
+└── README.md
+```
+
+## 环境准备
+
+运行环境需具备 Python 3、JDK 17、Android SDK 构建工具以及 zip：
+
+### Linux / Ubuntu / WSL 环境
+```bash
+sudo apt update
+sudo apt install python3 openjdk-17-jdk android-sdk-build-tools zip -y
+```
+
+### Termux 环境
+```bash
+pkg update
+pkg install python openjdk-17 d8 apksigner android-tools zip -y
+```
+
+## 使用方法
+
+1. 将官方原版安装包命名为 `QQ.apk` 并放置在项目根目录。
+2. 运行修补脚本：
+   ```bash
+   python3 patcher.py
+   ```
+   也可以手动指定输入与输出文件名：
+   ```bash
+   python3 patcher.py 输入包名.apk 输出包名.apk
+   ```
+3. 运行完成后，安装生成的 `QQ_Patched.apk` 即可。
+
+## 新增自定义功能
+
+项目采用引擎与规则分离的设计。如需添加新功能或修改其他 Dex 中的类，只需两步：
+
+### 1. 编写 Java 业务代码
+在 `src/com/tencent/qqnt/patch/` 目录下新增你的功能实现类（例如 `MyFeature.java`）。
+
+### 2. 在 rules.py 中添加配置
+无需关心目标类位于第几个 Dex，引擎会自动检索并完成插桩：
+
+```python
+RULES = [
+    # 现有规则...
+
+    # 新增规则示例：
+    {
+        "name": "自定义组件修改",
+        "target_class": "Lcom/tencent/mobileqq/some/TargetClass;",
+        "target_method": "targetMethod(Ljava/lang/String;)V",
+        "type": "INSERT_BEFORE",  # 支持 INSERT_BEFORE 或 REPLACE
+        "smali": """
+        invoke-static {p0, p1}, Lcom/tencent/qqnt/patch/MyFeature;->onHook(Ljava/lang/Object;Ljava/lang/String;)V
+        """
+    }
+]
+```
+
+## 免责声明
+
+本项目仅供 Android 逆向工程、Dex 字节码插桩技术的研究与交流使用。请勿将本项目用于任何商业牟利或侵犯他人合法权益的场景。使用修改版本产生的任何问题由使用者自行承担。
+
+
+
+
+【图片文件路径】: app/qqPatch/assets/Zzz_icon.png
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/android/util/Log.java
+============================================================
+
+package android.util;
+public class Log {
+    public static int d(String tag, String msg) { return 0; }
+    public static int e(String tag, String msg) { return 0; }
+    public static int e(String tag, String msg, Throwable tr) { return 0; }
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/relation/common/api/IRelationNTUinAndUidApi.java
+============================================================
+
+package com.tencent.relation.common.api;
+import com.tencent.mobileqq.qroute.QRouteApi;
+public interface IRelationNTUinAndUidApi extends QRouteApi {
+    String getUinFromUid(String uid);
+    String getUidFromUin(String uin);
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/kernelpublic/nativeinterface/XmlToJsonParam.java
+============================================================
+
+package com.tencent.qqnt.kernelpublic.nativeinterface;
+public class XmlToJsonParam {}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/kernelpublic/nativeinterface/Contact.java
+============================================================
+
+package com.tencent.qqnt.kernelpublic.nativeinterface;
+public class Contact {
+    public Contact(int chatType, String peerUid, String guildId) {}
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/kernelpublic/nativeinterface/JsonGrayElement.java
+============================================================
+
+package com.tencent.qqnt.kernelpublic.nativeinterface;
+public class JsonGrayElement {
+    public JsonGrayElement(long busiId, String jsonStr, String xmlStr, boolean isNeedStore, XmlToJsonParam xmlToJsonParam) {}
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/patch/AntiRevokeHelper.java
+============================================================
+
+package com.tencent.qqnt.patch;
+
+import android.util.Log;
+import com.tencent.mobileqq.qroute.QRoute;
+import com.tencent.qqnt.kernel.nativeinterface.IKernelMsgService;
+import com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession;
+import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
+import com.tencent.qqnt.kernelpublic.nativeinterface.JsonGrayElement;
+import com.tencent.qqnt.ntrelation.friendsinfo.api.IFriendsInfoService;
+import com.tencent.relation.common.api.IRelationNTUinAndUidApi;
+
+import java.io.ByteArrayOutputStream;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Set;
+
+public class AntiRevokeHelper {
+
+    private static final String TAG = "QQ_DEBUG";
+    private static final String CMD_MSG_PUSH = "trpc.msg.olpush.OlPushService.MsgPush";
+    private static final String CMD_SYNC_PUSH = "trpc.msg.register_proxy.RegisterProxy.InfoSyncPush";
+
+    private static final long BUSI_ID_C2C = 2021L;
+    private static final long BUSI_ID_GROUP = 2022L;
+
+    private static final Set<String> revokedCache = Collections.synchronizedSet(
+            Collections.newSetFromMap(new LinkedHashMap<String, Boolean>(100, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                    return size() > 300;
+                }
+            })
+    );
+
+    public static byte[] handleMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
+        if (cmd == null || buf == null) {
+            return buf;
+        }
+
+        if (CMD_MSG_PUSH.equals(cmd)) {
+            int revokeType = checkRevokeType(buf);
+            if (revokeType != 0) {
+                try {
+                    boolean isSelf = processRecall(session, buf, revokeType);
+                    if (isSelf) {
+                        return buf; // 自己撤回消息 -> 正常放行
+                    }
+                } catch (Throwable t) {
+                    Log.e(TAG, "处理撤回灰条异常", t);
+                }
+                return null; // 他人撤回 -> 拦截销毁
+            }
+            return buf;
+        }
+
+        if (CMD_SYNC_PUSH.equals(cmd)) {
+            if (hasRecallSignature(buf)) {
+                return filterProtoTree(buf);
+            }
+            return buf;
+        }
+
+        return buf;
+    }
+
+    private static int checkRevokeType(byte[] buf) {
+        if (buf == null || buf.length < 5) return 0;
+        int limit = Math.min(buf.length - 4, 150);
+        for (int i = 0; i < limit; i++) {
+            if (buf[i] == 0x08) {
+                if ((buf[i + 1] & 0xFF) == 0xDC && (buf[i + 2] & 0xFF) == 0x05
+                        && (buf[i + 3] & 0xFF) == 0x10 && (buf[i + 4] & 0xFF) == 0x11) {
+                    return 1;
+                }
+                if (i + 5 < buf.length && (buf[i + 1] & 0xFF) == 0x90 && (buf[i + 2] & 0xFF) == 0x04
+                        && (buf[i + 3] & 0xFF) == 0x10 && (buf[i + 4] & 0xFF) == 0x8A && (buf[i + 5] & 0xFF) == 0x01) {
+                    return 2;
+                }
+            }
+        }
+        return 0;
+    }
+
+    private static boolean hasRecallSignature(byte[] data) {
+        if (data == null || data.length < 5) return false;
+        int len = data.length;
+        for (int i = 0; i <= len - 5; i++) {
+            if (data[i] == 0x08) {
+                if ((data[i + 1] & 0xFF) == 0xDC && (data[i + 2] & 0xFF) == 0x05
+                        && (data[i + 3] & 0xFF) == 0x10 && (data[i + 4] & 0xFF) == 0x11) {
+                    return true;
+                }
+                if (i + 5 < len && (data[i + 1] & 0xFF) == 0x90 && (data[i + 2] & 0xFF) == 0x04
+                        && (data[i + 3] & 0xFF) == 0x10 && (data[i + 4] & 0xFF) == 0x8A && (data[i + 5] & 0xFF) == 0x01) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isDirectRecallMsg(byte[] data) {
+        if (data == null || data.length < 5) return false;
+        int limit = Math.min(data.length - 4, 60);
+        for (int i = 0; i < limit; i++) {
+            if (data[i] == 0x08) {
+                if ((data[i + 1] & 0xFF) == 0xDC && (data[i + 2] & 0xFF) == 0x05
+                        && (data[i + 3] & 0xFF) == 0x10 && (data[i + 4] & 0xFF) == 0x11) {
+                    return true;
+                }
+                if (i + 5 < data.length && (data[i + 1] & 0xFF) == 0x90 && (data[i + 2] & 0xFF) == 0x04
+                        && (data[i + 3] & 0xFF) == 0x10 && (data[i + 4] & 0xFF) == 0x8A && (data[i + 5] & 0xFF) == 0x01) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static byte[] filterProtoTree(byte[] data) {
+        if (data == null || data.length == 0 || !hasRecallSignature(data)) {
+            return data;
+        }
+
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            int pos = 0;
+            int len = data.length;
+
+            while (pos < len) {
+                int start = pos;
+                long tag = Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+                int wire = (int) (tag & 7);
+
+                if (wire == 2) {
+                    int l = (int) Proto.readVarint(data, pos);
+                    pos = Proto.lastPos;
+                    if (pos + l <= len) {
+                        byte[] sub = Proto.subArray(data, pos, l);
+                        pos += l;
+
+                        if (isDirectRecallMsg(sub)) {
+                            continue;
+                        }
+
+                        if (hasRecallSignature(sub)) {
+                            byte[] cleanedSub = filterProtoTree(sub);
+                            Proto.writeVarint(out, tag);
+                            Proto.writeVarint(out, cleanedSub.length);
+                            out.write(cleanedSub);
+                        } else {
+                            out.write(data, start, pos - start);
+                        }
+                    } else {
+                        break;
+                    }
+                } else if (wire == 0) {
+                    Proto.readVarint(data, pos);
+                    pos = Proto.lastPos;
+                    out.write(data, start, pos - start);
+                } else if (wire == 1) {
+                    pos += 8;
+                    out.write(data, start, pos - start);
+                } else if (wire == 5) {
+                    pos += 4;
+                    out.write(data, start, pos - start);
+                } else {
+                    break;
+                }
+            }
+            return out.toByteArray();
+        } catch (Throwable t) {
+            return data;
+        }
+    }
+
+    private static boolean processRecall(IQQNTWrapperSession session, byte[] buf, int revokeType) {
+        if (session == null) return false;
+        IKernelMsgService msgService = session.getMsgService();
+        if (msgService == null) return false;
+
+        byte[] qqMsgBytes = Proto.getBytes(buf, 1);
+        if (qqMsgBytes == null) return false;
+
+        byte[] headerBytes = Proto.getBytes(qqMsgBytes, 1);
+        if (headerBytes == null) return false;
+
+        byte[] bodyBytes = Proto.getBytes(qqMsgBytes, 3);
+        byte[] opBytes = bodyBytes != null ? Proto.getBytes(bodyBytes, 2) : null;
+
+        String selfUid = Proto.getString(headerBytes, 6);
+
+        if (revokeType == 1) {
+            String groupCode = Proto.getString(headerBytes, 2);
+            if (groupCode.isEmpty()) {
+                long g = Proto.getVarint(headerBytes, 1);
+                if (g > 0) groupCode = String.valueOf(g);
+            }
+
+            String operatorUid = findFirstUidRecursively(opBytes, selfUid);
+
+            if (operatorUid.isEmpty() || (selfUid != null && !selfUid.isEmpty() && operatorUid.equals(selfUid))) {
+                return true;
+            }
+
+            long msgSeq = findSeqInOpBytes(opBytes);
+            if (msgSeq == 0) {
+                msgSeq = extractGroupSeq(opBytes);
+            }
+
+            if (groupCode.isEmpty()) return false;
+
+            String cacheKey = "grp_" + groupCode + "_seq_" + msgSeq;
+            if (msgSeq > 0 && !revokedCache.add(cacheKey)) return false;
+
+            String uin = getUin(operatorUid);
+            String nickName = getUserNickName(operatorUid, uin);
+
+            String json = buildGroupClickableJson(operatorUid, uin, nickName, msgSeq);
+            Contact contact = new Contact(2, groupCode, "");
+            JsonGrayElement grayElement = new JsonGrayElement(BUSI_ID_GROUP, json, "", false, null);
+
+            msgService.addLocalJsonGrayTipMsg(contact, grayElement, true, true, null);
+
+        } else if (revokeType == 2) {
+            String peerUid = Proto.getString(headerBytes, 2);
+            if (peerUid.isEmpty() && opBytes != null) {
+                byte[] infoBytes = Proto.getBytes(opBytes, 1);
+                if (infoBytes != null) {
+                    peerUid = Proto.getString(infoBytes, 1);
+                }
+            }
+
+            if (peerUid.isEmpty() || (selfUid != null && !selfUid.isEmpty() && peerUid.equals(selfUid))) {
+                return true;
+            }
+
+            long msgSeq = extractC2CSeq(opBytes);
+            if (msgSeq == 0) {
+                msgSeq = findSeqInOpBytes(opBytes);
+            }
+
+            String cacheKey = "c2c_" + peerUid + "_seq_" + msgSeq;
+            if (msgSeq > 0 && !revokedCache.add(cacheKey)) return false;
+
+            String json = buildC2CClickableJson(msgSeq);
+            Contact contact = new Contact(1, peerUid, "");
+            JsonGrayElement grayElement = new JsonGrayElement(BUSI_ID_C2C, json, "", false, null);
+
+            msgService.addLocalJsonGrayTipMsg(contact, grayElement, true, true, null);
+        }
+
+        return false;
+    }
+
+    private static long findSeqInOpBytes(byte[] data) {
+        if (data == null || data.length == 0) return 0;
+        int pos = 0;
+        int len = data.length;
+        long foundTime = 0;
+        long foundSeq = 0;
+
+        while (pos < len) {
+            long tag = Proto.readVarint(data, pos);
+            pos = Proto.lastPos;
+            int wire = (int) (tag & 7);
+
+            if (wire == 0) {
+                long val = Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+                if (val >= 1577836800L && val <= 2051222400L) {
+                    foundTime = val;
+                } else if (val > 0 && val < 100000000L && val != 732 && val != 528 && val != 17 && val != 138) {
+                    foundSeq = val;
+                }
+            } else if (wire == 1) {
+                pos += 8;
+            } else if (wire == 2) {
+                int l = (int) Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+                if (pos + l <= len && l > 0) {
+                    byte[] sub = Proto.subArray(data, pos, l);
+                    long subSeq = findSeqInOpBytes(sub);
+                    if (subSeq > 0) return subSeq;
+                }
+                pos += l;
+            } else if (wire == 5) {
+                pos += 4;
+            } else {
+                pos++;
+            }
+        }
+
+        if (foundTime > 0 && foundSeq > 0) {
+            return foundSeq;
+        }
+        return 0;
+    }
+
+    private static String findFirstUidRecursively(byte[] data, String excludeUid) {
+        if (data == null || data.length == 0) return "";
+        int pos = 0;
+        int len = data.length;
+        while (pos < len) {
+            long tag = Proto.readVarint(data, pos);
+            pos = Proto.lastPos;
+            int wire = (int) (tag & 7);
+            if (wire == 2) {
+                int l = (int) Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+                if (pos + l <= len && l > 0) {
+                    byte[] sub = Proto.subArray(data, pos, l);
+                    if (l >= 4 && l <= 40 && isAscii(sub)) {
+                        String s = new String(sub);
+                        if (s.startsWith("u_") && (excludeUid == null || !s.equals(excludeUid))) {
+                            return s;
+                        }
+                    }
+                    String inner = findFirstUidRecursively(sub, excludeUid);
+                    if (!inner.isEmpty()) {
+                        return inner;
+                    }
+                }
+                pos += l;
+            } else if (wire == 0) {
+                Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+            } else if (wire == 1) {
+                pos += 8;
+            } else if (wire == 5) {
+                pos += 4;
+            } else {
+                pos++;
+            }
+        }
+        return "";
+    }
+
+    private static long extractGroupSeq(byte[] opBytes) {
+        if (opBytes == null || opBytes.length == 0) return 0;
+        byte[] realBytes = (opBytes.length > 7 && opBytes[0] != 0x08) ? Proto.subArray(opBytes, 7) : opBytes;
+        byte[] infoBytes = Proto.getBytes(realBytes, 2);
+        if (infoBytes != null) {
+            byte[] msgInfoBytes = Proto.getBytes(infoBytes, 2);
+            if (msgInfoBytes != null) {
+                return Proto.getVarint(msgInfoBytes, 1);
+            }
+        }
+        return 0;
+    }
+
+    private static long extractC2CSeq(byte[] opBytes) {
+        if (opBytes == null || opBytes.length == 0) return 0;
+        byte[] infoBytes = Proto.getBytes(opBytes, 1);
+        if (infoBytes != null) {
+            return Proto.getVarint(infoBytes, 2);
+        }
+        return 0;
+    }
+
+    private static String getUin(String uid) {
+        if (uid == null || uid.isEmpty()) return "";
+        try {
+            IRelationNTUinAndUidApi api = QRoute.api(IRelationNTUinAndUidApi.class);
+            if (api != null) {
+                String uin = api.getUinFromUid(uid);
+                if (uin != null && !uin.isEmpty() && !uin.equals("0")) return uin;
+            }
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    private static String getUserNickName(String uid, String uin) {
+        if (uid == null || uid.isEmpty()) return "群成员";
+        try {
+            IFriendsInfoService service = QRoute.api(IFriendsInfoService.class);
+            if (service != null) {
+                String remark = service.getRemarkWithUid(uid, "");
+                if (remark != null && !remark.isEmpty()) return remark;
+                String nick = service.getNickWithUid(uid, "");
+                if (nick != null && !nick.isEmpty()) return nick;
+            }
+        } catch (Throwable ignored) {}
+
+        if (uin != null && !uin.isEmpty() && !uin.equals("0")) {
+            return uin;
+        }
+        return "群成员";
+    }
+
+    private static String buildGroupClickableJson(String operatorUid, String uin, String nickName, long msgSeq) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"align\":\"center\",\"items\":[");
+
+        String displayNick = escapeJson(nickName);
+        String uinVal = (uin != null) ? uin : "";
+
+        sb.append("{\"col\":\"3\",\"jp\":\"").append(operatorUid).append("\",\"nm\":\"").append(displayNick)
+          .append("\",\"tp\":\"0\",\"type\":\"qq\",\"uid\":\"").append(operatorUid).append("\",\"uin\":\"").append(uinVal).append("\"},");
+
+        sb.append("{\"txt\":\" 尝试撤回 \",\"type\":\"nor\"},");
+
+        sb.append("{\"col\":\"3\",\"local_jp\":58,");
+        if (msgSeq > 0) {
+            sb.append("\"param\":{\"seq\":").append(msgSeq).append("},");
+        } else {
+            sb.append("\"param\":{},");
+        }
+        sb.append("\"txt\":\"一条消息\",\"type\":\"url\"}");
+
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private static String buildC2CClickableJson(long msgSeq) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"align\":\"center\",\"items\":[");
+        sb.append("{\"txt\":\"对方 尝试撤回 \",\"type\":\"nor\"},");
+
+        sb.append("{\"col\":\"3\",\"local_jp\":58,");
+        if (msgSeq > 0) {
+            sb.append("\"param\":{\"seq\":").append(msgSeq).append("},");
+        } else {
+            sb.append("\"param\":{},");
+        }
+        sb.append("\"txt\":\"一条消息\",\"type\":\"url\"}");
+
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private static boolean isAscii(byte[] b) {
+        if (b == null || b.length == 0) return false;
+        for (byte v : b) {
+            if (v < 32 || v > 126) return false;
+        }
+        return true;
+    }
+
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static class Proto {
+        static int lastPos = 0;
+
+        static long readVarint(byte[] data, int pos) {
+            long result = 0;
+            for (int shift = 0; shift < 64 && pos < data.length; shift += 7) {
+                byte b = data[pos++];
+                result |= (long) (b & 0x7F) << shift;
+                if ((b & 0x80) == 0) break;
+            }
+            lastPos = pos;
+            return result;
+        }
+
+        static void writeVarint(ByteArrayOutputStream out, long value) {
+            while ((value & ~0x7FL) != 0) {
+                out.write((int) ((value & 0x7F) | 0x80));
+                value >>>= 7;
+            }
+            out.write((int) (value & 0x7F));
+        }
+
+        static byte[] getBytes(byte[] data, int targetField) {
+            if (data == null) return null;
+            int pos = 0;
+            int len = data.length;
+            while (pos < len) {
+                long tag = readVarint(data, pos);
+                pos = lastPos;
+                int field = (int) (tag >>> 3);
+                int wire = (int) (tag & 7);
+                if (wire == 0) {
+                    readVarint(data, pos);
+                    pos = lastPos;
+                } else if (wire == 1) {
+                    pos += 8;
+                } else if (wire == 2) {
+                    int l = (int) readVarint(data, pos);
+                    pos = lastPos;
+                    if (field == targetField) {
+                        return subArray(data, pos, l);
+                    }
+                    pos += l;
+                } else if (wire == 5) {
+                    pos += 4;
+                } else {
+                    break;
+                }
+            }
+            return null;
+        }
+
+        static String getString(byte[] data, int targetField) {
+            byte[] b = getBytes(data, targetField);
+            return b != null ? new String(b) : "";
+        }
+
+        static long getVarint(byte[] data, int targetField) {
+            if (data == null) return 0;
+            int pos = 0;
+            int len = data.length;
+            while (pos < len) {
+                long tag = readVarint(data, pos);
+                pos = lastPos;
+                int field = (int) (tag >>> 3);
+                int wire = (int) (tag & 7);
+                if (wire == 0) {
+                    long val = readVarint(data, pos);
+                    pos = lastPos;
+                    if (field == targetField) return val;
+                } else if (wire == 1) {
+                    pos += 8;
+                } else if (wire == 2) {
+                    int l = (int) readVarint(data, pos);
+                    pos = lastPos + l;
+                } else if (wire == 5) {
+                    pos += 4;
+                } else {
+                    break;
+                }
+            }
+            return 0;
+        }
+
+        static byte[] subArray(byte[] src, int start) {
+            return subArray(src, start, src.length - start);
+        }
+
+        static byte[] subArray(byte[] src, int start, int length) {
+            if (src == null || start < 0 || length <= 0 || start + length > src.length) return new byte[0];
+            byte[] dest = new byte[length];
+            System.arraycopy(src, start, dest, 0, length);
+            return dest;
+        }
+    }
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/patch/SettingInjector.java
+============================================================
+
+package com.tencent.qqnt.patch;
+
+import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ImageSpan;
+import android.util.Log;
+import android.widget.Toast;
+
+import java.io.InputStream;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.Collections;
+import java.util.List;
+
+public class SettingInjector {
+    private static final String TAG = "QQ_DEBUG";
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public static void inject(Context context, List resultList, String itemClassName) {
+        if (context == null || resultList == null || resultList.isEmpty() || itemClassName == null) {
+            return;
+        }
+
+        try {
+            // 1. 获取 Item 类 (自动适配混淆)
+            Class<?> itemClass = Class.forName(itemClassName);
+
+            // 2. 匹配 Item 的构造方法
+            Constructor<?> itemConstructor = null;
+            for (Constructor<?> c : itemClass.getConstructors()) {
+                Class<?>[] pts = c.getParameterTypes();
+                if (pts.length >= 4 && pts[0] == Context.class && pts[1] == int.class &&
+                    CharSequence.class.isAssignableFrom(pts[2]) && pts[3] == int.class) {
+                    itemConstructor = c;
+                    break;
+                }
+            }
+            if (itemConstructor == null) return;
+
+            // 3. 利用富文本加载 assets 里的自定义图标
+            CharSequence finalTitle = "QQNT Patcher 模块"; 
+            try {
+                // 从 assets 中读取你的 zzz_icon.png
+                InputStream is = context.getAssets().open("zzz_icon.png");
+                Bitmap rawBitmap = BitmapFactory.decodeStream(is);
+                
+                // 将图片压缩到适合 UI 的大小 (例如 24dp)
+                float density = context.getResources().getDisplayMetrics().density;
+                int iconSize = (int) (24 * density + 0.5f);
+                Bitmap scaledBitmap = Bitmap.createScaledBitmap(rawBitmap, iconSize, iconSize, true);
+                
+                // 转换为 Drawable 并设置边界
+                Drawable drawable = new BitmapDrawable(context.getResources(), scaledBitmap);
+                drawable.setBounds(0, 0, iconSize, iconSize);
+                
+                // 创建富文本（前面多留两个空格，用来占位放图片）
+                SpannableString sp = new SpannableString("  " + finalTitle);
+                // 把第 0 到 1 个字符（即空格）替换成我们的图片，并居中对齐
+                sp.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_CENTER), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                
+                finalTitle = sp; // 标题变成了带着你自定义图片的富文本！
+            } catch (Throwable t) {
+                Log.w(TAG, "从 assets 加载 zzz_icon.png 失败，回退到纯文本", t);
+            }
+
+            // 4. 构建构造函数的参数
+            Object[] itemArgs = new Object[itemConstructor.getParameterTypes().length];
+            itemArgs[0] = context;
+            itemArgs[1] = 10;           // MODULE_ORDER (排序)
+            itemArgs[2] = finalTitle;   // 传入带有图片的富文本
+            itemArgs[3] = 0;            // 原生图标参数传 0（不显示原生图标）
+
+            Object mySettingItem = itemConstructor.newInstance(itemArgs);
+
+            // 5. 注入点击事件 (Function0)
+            Class<?> func0Class = Class.forName("kotlin.jvm.functions.Function0");
+            Method setClickMethod = null;
+            for (Method m : itemClass.getMethods()) {
+                Class<?>[] pts = m.getParameterTypes();
+                if (pts.length == 1 && pts[0] == func0Class && m.getReturnType() == void.class) {
+                    setClickMethod = m;
+                    break;
+                }
+            }
+
+            if (setClickMethod != null) {
+                Object clickProxy = Proxy.newProxyInstance(
+                        context.getClassLoader(),
+                        new Class[]{func0Class},
+                        (proxy, method, args) -> {
+                            if ("invoke".equals(method.getName())) {
+                                Toast.makeText(context, "你好，QQNT Patcher！", Toast.LENGTH_SHORT).show();
+                            }
+                            return null;
+                        }
+                );
+                setClickMethod.invoke(mySettingItem, clickProxy);
+            }
+
+            // 6. 获取原生的 Group 类，构造一个新的 Group
+            Object firstGroup = resultList.get(0);
+            Class<?> groupClass = firstGroup.getClass();
+            Constructor<?> groupConstructor = groupClass.getConstructors()[0];
+
+            Object[] groupArgs = new Object[groupConstructor.getParameterTypes().length];
+            groupArgs[0] = Collections.singletonList(mySettingItem);
+            if (groupArgs.length > 1) groupArgs[1] = "模块扩展"; // topTitle
+            if (groupArgs.length > 2) groupArgs[2] = "";       // bottomTitle
+
+            Object myGroup = groupConstructor.newInstance(groupArgs);
+
+            // 7. 插入到原生界面的第 2 个位置（排在搜索框下面）
+            resultList.add(1, myGroup);
+            Log.d(TAG, "设置中心动态注入成功，已加载 zzz_icon.png!");
+
+        } catch (Throwable t) {
+            Log.e(TAG, "设置中心注入失败", t);
+        }
+    }
+}
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/kernel/nativeinterface/IAddJsonGrayTipMsgCallback.java
+============================================================
+
+package com.tencent.qqnt.kernel.nativeinterface;
+public interface IAddJsonGrayTipMsgCallback {}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/kernel/nativeinterface/IKernelMsgService.java
+============================================================
+
+package com.tencent.qqnt.kernel.nativeinterface;
+import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
+import com.tencent.qqnt.kernelpublic.nativeinterface.JsonGrayElement;
+public interface IKernelMsgService {
+    void addLocalJsonGrayTipMsg(Contact contact, JsonGrayElement jsonGrayElement, boolean z, boolean z2, IAddJsonGrayTipMsgCallback callback);
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession.java
+============================================================
+
+package com.tencent.qqnt.kernel.nativeinterface;
+public interface IQQNTWrapperSession {
+    IKernelMsgService getMsgService();
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/qqnt/ntrelation/friendsinfo/api/IFriendsInfoService.java
+============================================================
+
+package com.tencent.qqnt.ntrelation.friendsinfo.api;
+import com.tencent.mobileqq.qroute.QRouteApi;
+public interface IFriendsInfoService extends QRouteApi {
+    String getNickWithUid(String uid, String defaultValue);
+    String getRemarkWithUid(String uid, String defaultValue);
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/mobileqq/qroute/QRoute.java
+============================================================
+
+package com.tencent.mobileqq.qroute;
+public class QRoute {
+    public static <T extends QRouteApi> T api(Class<T> clazz) { return null; }
+}
+
+
+
+============================================================
+【文本文件内容】路径: app/qqPatch/src/com/tencent/mobileqq/qroute/QRouteApi.java
+============================================================
+
+package com.tencent.mobileqq.qroute;
+public interface QRouteApi {}
+
+

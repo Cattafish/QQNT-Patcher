@@ -3,6 +3,14 @@
 Patch 规则定义文件
 """
 
+import zipfile
+import os
+import subprocess
+import re
+import shutil
+import struct
+import shlex
+
 RULES = [
     {
         "name": "防撤回核心拦截 (onMsfPush)",
@@ -32,3 +40,130 @@ RULES = [
 """
     }
 ]
+
+def find_main_setting_config_class(dex_bytes):
+    """
+    解析 DEX 继承树，寻找位于 com.tencent.mobileqq.setting.main 包下继承自 SettingConfigProvider 的主类
+    """
+    if len(dex_bytes) < 0x70 or dex_bytes[:4] != b'dex\n':
+        return None
+    if b'Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;' not in dex_bytes:
+        return None
+
+    try:
+        string_ids_off = struct.unpack_from('<I', dex_bytes, 0x3C)[0]
+        type_ids_size, type_ids_off = struct.unpack_from('<II', dex_bytes, 0x40)
+        class_defs_size, class_defs_off = struct.unpack_from('<II', dex_bytes, 0x60)
+
+        def get_type_str(type_idx):
+            if type_idx >= type_ids_size: return ""
+            desc_idx = struct.unpack_from('<I', dex_bytes, type_ids_off + type_idx * 4)[0]
+            str_off = struct.unpack_from('<I', dex_bytes, string_ids_off + desc_idx * 4)[0]
+            p = str_off
+            while dex_bytes[p] & 0x80:
+                p += 1
+            p += 1
+            end = dex_bytes.find(b'\x00', p)
+            return dex_bytes[p:end].decode('utf-8', errors='ignore')
+
+        target_super = "Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;"
+        for i in range(class_defs_size):
+            super_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32 + 8)[0]
+            if super_idx < type_ids_size and get_type_str(super_idx) == target_super:
+                class_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32)[0]
+                cls_name = get_type_str(class_idx)
+                # 严格限制包路径为主设置模块
+                if cls_name.startswith("Lcom/tencent/mobileqq/setting/main/"):
+                    return cls_name
+    except Exception:
+        pass
+    return None
+
+def get_dynamic_setting_rule(apk_path, baksmali_bin, work_dir):
+    """
+    自适应任意版本的设置中心动态规则生成
+    """
+    config_dex = None
+    config_class = None
+    item_dex = None
+
+    with zipfile.ZipFile(apk_path, 'r') as zf:
+        dex_files = [f for f in zf.namelist() if re.match(r'^classes\d*\.dex$', f)]
+        for dex in dex_files:
+            data = zf.read(dex)
+            
+            if not config_class:
+                found_cls = find_main_setting_config_class(data)
+                if found_cls:
+                    config_class = found_cls
+                    config_dex = dex
+            
+            if not item_dex and b'SimpleItemProcessor' in data:
+                item_dex = dex
+
+    if not config_class or not config_dex or not item_dex:
+        return None
+
+    scan_dir = os.path.join(work_dir, "dynamic_setting_scan")
+    os.makedirs(scan_dir, exist_ok=True)
+
+    target_dexes = set([config_dex, item_dex])
+    with zipfile.ZipFile(apk_path, 'r') as zf:
+        for dex in target_dexes:
+            dex_out_path = os.path.join(scan_dir, dex)
+            with open(dex_out_path, "wb") as f:
+                f.write(zf.read(dex))
+            smali_out = os.path.join(scan_dir, f"smali_{dex}")
+            subprocess.run(
+                f"{baksmali_bin} d {shlex.quote(dex_out_path)} -o {shlex.quote(smali_out)}",
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+
+    target_method = None
+    item_class = None
+
+    for root, _, files in os.walk(scan_dir):
+        for f in files:
+            if not f.endswith('.smali'):
+                continue
+            path = os.path.join(root, f)
+            with open(path, 'r', encoding='utf-8') as file_obj:
+                content = file_obj.read()
+
+                # 提取 ItemProcessor 混淆类名
+                if 'SimpleItemProcessor' in content and not item_class:
+                    m = re.search(r'\.class.+?(L[\w/]+;)', content)
+                    if m:
+                        item_class = m.group(1).replace('/', '.')[1:-1]
+
+                # 提取主配置类中生成列表的方法
+                cls_descriptor = config_class[1:-1] + ".smali"
+                if path.endswith(cls_descriptor) and not target_method:
+                    m_method = re.search(r'\.method.+?(\w+)\(Landroid/content/Context;\)Ljava/util/List;', content)
+                    if m_method:
+                        target_method = f"{m_method.group(1)}(Landroid/content/Context;)Ljava/util/List;"
+
+    shutil.rmtree(scan_dir, ignore_errors=True)
+
+    if config_class and target_method and item_class:
+        # 使用 move-object/16 将参数转至低位寄存器 v0, v1, v2，彻底杜绝 4-bit 寻址溢出
+        smali_hook = f"""
+    move-object/16 v0, \\1
+    move-object/16 v1, p1
+    const-string v2, "{item_class}"
+    invoke-static {{v1, v0, v2}}, Lcom/tencent/qqnt/patch/SettingInjector;->inject(Landroid/content/Context;Ljava/util/List;Ljava/lang/String;)V
+    return-object v0"""
+
+        return {
+            "name": f"设置中心动态注入 ({config_class})",
+            "target_class": config_class,
+            "target_method": target_method,
+            "type": "REGEX_REPLACE",
+            "regex": r"return-object\s+([vp]\d+)(?=\s*(?:\.end\s+method|$))",
+            "smali": smali_hook
+        }
+
+    return None

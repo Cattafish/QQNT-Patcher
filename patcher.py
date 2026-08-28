@@ -8,8 +8,9 @@ import zipfile
 import subprocess
 import re
 import shlex
+import struct
 import urllib.request
-from rules import RULES
+import rules
 
 TOOLS_DIR = os.path.abspath("./tools")
 BAKSMALI_JAR = os.path.join(TOOLS_DIR, "baksmali.jar")
@@ -29,6 +30,7 @@ def run_cmd(cmd, cwd=None):
     if ret.returncode != 0:
         log("ERR", f"命令执行失败: {cmd}")
         log("ERR", ret.stderr.decode('utf-8', errors='ignore'))
+        log("ERR", ret.stdout.decode('utf-8', errors='ignore'))
         sys.exit(1)
     return ret.stdout.decode('utf-8', errors='ignore')
 
@@ -81,6 +83,32 @@ def get_smali_cmd():
         return "smali"
     ensure_smali_jars()
     return f"java -jar {shlex.quote(SMALI_JAR)}"
+
+def get_defined_classes_in_dex(dex_bytes):
+    if len(dex_bytes) < 0x70 or dex_bytes[:4] != b'dex\n':
+        return set()
+    try:
+        string_ids_off = struct.unpack_from('<I', dex_bytes, 0x3C)[0]
+        type_ids_off = struct.unpack_from('<I', dex_bytes, 0x44)[0]
+        class_defs_size, class_defs_off = struct.unpack_from('<II', dex_bytes, 0x60)
+
+        classes = set()
+        for i in range(class_defs_size):
+            class_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32)[0]
+            desc_idx = struct.unpack_from('<I', dex_bytes, type_ids_off + class_idx * 4)[0]
+            str_off = struct.unpack_from('<I', dex_bytes, string_ids_off + desc_idx * 4)[0]
+
+            p = str_off
+            while dex_bytes[p] & 0x80:
+                p += 1
+            p += 1
+
+            end = dex_bytes.find(b'\x00', p)
+            if end != -1:
+                classes.add(dex_bytes[p:end].decode('utf-8', errors='ignore'))
+        return classes
+    except Exception:
+        return set()
 
 def compile_helper_dex(work_dir):
     src_dir = "./src"
@@ -151,6 +179,11 @@ def apply_patch_to_smali(smali_path, rule):
                 return m_body[:idx] + "\n" + patch_smali + "\n" + m_body[idx:]
             return m_body
         code = pattern.sub(repl, code)
+    elif patch_type == "REGEX_REPLACE":
+        def repl_regex(match):
+            m_body = match.group(1)
+            return re.sub(rule["regex"], patch_smali, m_body)
+        code = pattern.sub(repl_regex, code)
 
     with open(smali_path, "w", encoding="utf-8") as f:
         f.write(code)
@@ -171,6 +204,9 @@ def main():
         shutil.rmtree(work_dir)
     os.makedirs(work_dir, exist_ok=True)
 
+    baksmali_bin = get_baksmali_cmd()
+    smali_bin = get_smali_cmd()
+
     helper_dex_path = compile_helper_dex(work_dir)
 
     log("INFO", f"2. 正在扫描 {input_apk} 结构与 Dex 分包...")
@@ -190,15 +226,24 @@ def main():
     next_dex_name = f"classes{max_idx + 1}.dex"
     log("INFO", f"-> 现有 {len(dex_list)} 个 Dex (最大为 classes{max_idx}.dex)，新增 Dex 分配为: {next_dex_name}")
 
-    log("INFO", "3. 正在定位规则目标所在的 Dex 分包...")
-    dex_to_rules = {}
+    log("INFO", "3. 正在动态探测与定位修改规则...")
+    all_rules = list(rules.RULES)
+    
+    dyn_setting_rule = rules.get_dynamic_setting_rule(input_apk, baksmali_bin, work_dir)
+    if dyn_setting_rule:
+        all_rules.append(dyn_setting_rule)
+        log("OK", f"-> 成功动态生成规则: [{dyn_setting_rule['name']}]")
+    else:
+        log("WARN", "-> 未检测到设置中心特征")
 
+    dex_to_rules = {}
     with zipfile.ZipFile(input_apk, 'r') as zf:
         for dex_name in dex_list:
-            content = zf.read(dex_name)
-            for rule in RULES:
-                cls_bytes = rule["target_class"].encode('utf-8')
-                if cls_bytes in content:
+            dex_bytes = zf.read(dex_name)
+            defined_classes = get_defined_classes_in_dex(dex_bytes)
+            
+            for rule in all_rules:
+                if rule["target_class"] in defined_classes:
                     dex_to_rules.setdefault(dex_name, []).append(rule)
 
     if not dex_to_rules:
@@ -206,10 +251,7 @@ def main():
         sys.exit(1)
 
     for d_name, r_list in dex_to_rules.items():
-        log("INFO", f"-> 分包 [{d_name}] 命中 {len(r_list)} 条修改规则")
-
-    baksmali_bin = get_baksmali_cmd()
-    smali_bin = get_smali_cmd()
+        log("INFO", f"-> 分包 [{d_name}] 精准命中 {len(r_list)} 条修改规则")
 
     modified_dex_files = []
     with zipfile.ZipFile(input_apk, 'r') as zf:
@@ -230,9 +272,14 @@ def main():
 
             patched_dex = os.path.join(work_dir, f"patched_{dex_name}")
             run_cmd(f"{smali_bin} a {shlex.quote(smali_out)} -o {shlex.quote(patched_dex)}")
+            
+            if not os.path.exists(patched_dex):
+                log("ERR", f"汇编分包 {dex_name} 失败，未生成 Dex 文件！")
+                sys.exit(1)
+                
             modified_dex_files.append((patched_dex, dex_name))
 
-    log("INFO", "5. 正在注入已修补的 Dex 和新增的 Helper Dex ...")
+    log("INFO", "5. 正在注入已修补的 Dex、扩展 Dex 与自定义 Assets ...")
     shutil.copyfile(input_apk, output_apk)
 
     inject_dir = os.path.join(work_dir, "inject")
@@ -249,7 +296,16 @@ def main():
         shutil.copyfile(helper_dex_path, target_helper)
         zip_args.append(shlex.quote(next_dex_name))
 
-    run_cmd(f"cd {shlex.quote(inject_dir)} && zip -q -u ../../{shlex.quote(output_apk)} " + " ".join(zip_args))
+    custom_icon_path = "assets/zzz_icon.png"
+    if os.path.exists(custom_icon_path):
+        target_assets_dir = os.path.join(inject_dir, "assets")
+        os.makedirs(target_assets_dir, exist_ok=True)
+        shutil.copyfile(custom_icon_path, os.path.join(target_assets_dir, "zzz_icon.png"))
+        zip_args.append(shlex.quote("assets/zzz_icon.png"))
+        log("OK", "已附加自定义图标资源: assets/zzz_icon.png")
+
+    abs_output_apk = os.path.abspath(output_apk)
+    run_cmd(f"cd {shlex.quote(inject_dir)} && zip -q -u {shlex.quote(abs_output_apk)} " + " ".join(zip_args))
 
     log("INFO", "6. 正在对 APK 进行签名 ...")
     keystore = os.path.join(work_dir, "debug.keystore")
