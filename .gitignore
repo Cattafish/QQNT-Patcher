@@ -7,3 +7,4 @@ __pycache__/
 *.class
 bin/
 dex_out/
+*.idsig
