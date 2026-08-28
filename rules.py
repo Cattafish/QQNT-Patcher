@@ -12,6 +12,7 @@ import struct
 import shlex
 
 RULES = [
+    # 规则 1：防撤回拦截
     {
         "name": "防撤回核心拦截 (onMsfPush)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;",
@@ -38,13 +39,27 @@ RULES = [
     return-void
 .end method
 """
+    },
+    # 规则 2：宿主 QQBrowserActivity 寄生挂载（Material 3 原生独立设置页面）
+    {
+        "name": "M3 设置页面宿主 Activity 寄生挂载",
+        "target_class": "Lcom/tencent/mobileqq/activity/QQBrowserActivity;",
+        "target_method": "doOnCreate(Landroid/os/Bundle;)Z",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    # === [Zzz M3 Activity Hook] ===
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/ZzzSettingActivity;->onHijackCreate(Landroid/app/Activity;)Z
+    move-result v0
+    if-eqz v0, :cond_orig_browser
+    const/4 v0, 0x1
+    return v0
+    :cond_orig_browser
+"""
     }
 ]
 
 def find_main_setting_config_class(dex_bytes):
-    """
-    解析 DEX 继承树，寻找位于 com.tencent.mobileqq.setting.main 包下继承自 SettingConfigProvider 的主类
-    """
     if len(dex_bytes) < 0x70 or dex_bytes[:4] != b'dex\n':
         return None
     if b'Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;' not in dex_bytes:
@@ -72,7 +87,6 @@ def find_main_setting_config_class(dex_bytes):
             if super_idx < type_ids_size and get_type_str(super_idx) == target_super:
                 class_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32)[0]
                 cls_name = get_type_str(class_idx)
-                # 严格限制包路径为主设置模块
                 if cls_name.startswith("Lcom/tencent/mobileqq/setting/main/"):
                     return cls_name
     except Exception:
@@ -80,9 +94,6 @@ def find_main_setting_config_class(dex_bytes):
     return None
 
 def get_dynamic_setting_rule(apk_path, baksmali_bin, work_dir):
-    """
-    自适应任意版本的设置中心动态规则生成
-    """
     config_dex = None
     config_class = None
     item_dex = None
@@ -133,13 +144,11 @@ def get_dynamic_setting_rule(apk_path, baksmali_bin, work_dir):
             with open(path, 'r', encoding='utf-8') as file_obj:
                 content = file_obj.read()
 
-                # 提取 ItemProcessor 混淆类名
                 if 'SimpleItemProcessor' in content and not item_class:
                     m = re.search(r'\.class.+?(L[\w/]+;)', content)
                     if m:
                         item_class = m.group(1).replace('/', '.')[1:-1]
 
-                # 提取主配置类中生成列表的方法
                 cls_descriptor = config_class[1:-1] + ".smali"
                 if path.endswith(cls_descriptor) and not target_method:
                     m_method = re.search(r'\.method.+?(\w+)\(Landroid/content/Context;\)Ljava/util/List;', content)
@@ -149,7 +158,6 @@ def get_dynamic_setting_rule(apk_path, baksmali_bin, work_dir):
     shutil.rmtree(scan_dir, ignore_errors=True)
 
     if config_class and target_method and item_class:
-        # 使用 move-object/16 将参数转至低位寄存器 v0, v1, v2，彻底杜绝 4-bit 寻址溢出
         smali_hook = f"""
     move-object/16 v0, \\1
     move-object/16 v1, p1

@@ -81,7 +81,8 @@ public class SettingInjector {
                     new Class[]{func0Class},
                     (proxy, method, args) -> {
                         if ("invoke".equals(method.getName())) {
-                            Toast.makeText(context, "你好，" + TITLE_TEXT + " " + RIGHT_SUB_TEXT + "！", Toast.LENGTH_SHORT).show();
+                            // 【核心】：启动真正的原生 Material 3 Activity！
+                            ZzzSettingActivity.start(context);
                         }
                         return unitInstance;
                     }
