@@ -54,7 +54,7 @@ sudo apt install python3 openjdk-17-jdk android-sdk-build-tools zip -y
 ### Termux 环境
 ```bash
 pkg update
-pkg install python openjdk-17 android-tools zip -y
+pkg install python openjdk-17 d8 apksigner android-tools zip -y
 ```
 
 ## 使用方法
