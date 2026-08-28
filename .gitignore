@@ -1,0 +1,9 @@
+*.apk
+build_cache/
+tools/
+*.keystore
+*.dex
+__pycache__/
+*.class
+bin/
+dex_out/
