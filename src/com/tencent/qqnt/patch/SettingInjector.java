@@ -81,8 +81,8 @@ public class SettingInjector {
                     new Class[]{func0Class},
                     (proxy, method, args) -> {
                         if ("invoke".equals(method.getName())) {
-                            // 【核心】：启动真正的原生 Material 3 Activity！
-                            ZzzSettingActivity.start(context);
+                            // 【核心】：直接启动 QQ 原生二级设置 Fragment！
+                            ZzzSettingFragment.start(context);
                         }
                         return unitInstance;
                     }

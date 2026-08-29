@@ -40,21 +40,22 @@ RULES = [
 .end method
 """
     },
-    # 规则 2：宿主 QQBrowserActivity 寄生挂载（Material 3 原生独立设置页面）
+    # 规则 2：QQ 原生二级设置页面挂载 (使用 move-object/16 安全转接)
     {
-        "name": "M3 设置页面宿主 Activity 寄生挂载",
-        "target_class": "Lcom/tencent/mobileqq/activity/QQBrowserActivity;",
-        "target_method": "doOnCreate(Landroid/os/Bundle;)Z",
+        "name": "QQ 原生二级设置页面挂载",
+        "target_class": "Lcom/tencent/mobileqq/setting/generalSetting/GeneralSettingFragment;",
+        "target_method": "onViewCreated(Landroid/view/View;Landroid/os/Bundle;)V",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [Zzz M3 Activity Hook] ===
+    # === [Zzz Native Setting Hook] ===
     move-object/16 v0, p0
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/ZzzSettingActivity;->onHijackCreate(Landroid/app/Activity;)Z
+    move-object/16 v1, p1
+    move-object/16 v2, p2
+    invoke-static {v0, v1, v2}, Lcom/tencent/qqnt/patch/ZzzSettingFragment;->onHijackViewCreated(Ljava/lang/Object;Landroid/view/View;Landroid/os/Bundle;)Z
     move-result v0
-    if-eqz v0, :cond_orig_browser
-    const/4 v0, 0x1
-    return v0
-    :cond_orig_browser
+    if-eqz v0, :cond_orig_general
+    return-void
+    :cond_orig_general
 """
     }
 ]
