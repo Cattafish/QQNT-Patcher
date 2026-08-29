@@ -12,7 +12,7 @@ import struct
 import shlex
 
 RULES = [
-    # 规则 1：防撤回拦截
+    # 规则 1：防撤回核心拦截
     {
         "name": "防撤回核心拦截 (onMsfPush)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;",
@@ -40,7 +40,7 @@ RULES = [
 .end method
 """
     },
-    # 规则 2：QQ 原生二级设置页面挂载 (使用 move-object/16 安全转接)
+    # 规则 2：QQ 原生二级设置页面挂载
     {
         "name": "QQ 原生二级设置页面挂载",
         "target_class": "Lcom/tencent/mobileqq/setting/generalSetting/GeneralSettingFragment;",
@@ -56,6 +56,18 @@ RULES = [
     if-eqz v0, :cond_orig_general
     return-void
     :cond_orig_general
+"""
+    },
+    # 规则 3：喵喵助手 (发送消息拦截与文字替换)
+    {
+        "name": "喵喵助手 (sendMsg)",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
+        "target_method": "sendMsg(JLcom/tencent/qqnt/kernelpublic/nativeinterface/Contact;Ljava/util/ArrayList;Ljava/util/HashMap;Lcom/tencent/qqnt/kernel/nativeinterface/IOperateCallback;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    # === [Meow Helper Hook] ===
+    move-object/16 v0, p4
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/MeowHelper;->handleSendMsg(Ljava/util/ArrayList;)V
 """
     }
 ]

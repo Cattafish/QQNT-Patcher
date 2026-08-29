@@ -3,6 +3,7 @@ package com.tencent.qqnt.patch;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.CompoundButton;
@@ -19,10 +20,9 @@ import java.util.List;
 public class ZzzSettingFragment {
 
     public static final String EXTRA_FLAG = "open_zzz_settings";
+    private static final String TG_CHANNEL_URL = "https://t.me/ZcraftMod";
+    private static final String GITHUB_REPO_URL = "https://github.com/Cattafish/QQNT-Patcher";
 
-    /**
-     * 启动 QQ 原生二级设置页面
-     */
     public static void start(Context context) {
         try {
             ClassLoader cl = context.getClassLoader();
@@ -39,10 +39,6 @@ public class ZzzSettingFragment {
         }
     }
 
-    /**
-     * 劫持 GeneralSettingFragment.onViewCreated，渲染 100% QQ 原生设置卡片
-     * @return true: 拦截原生通用设置并展示 Zzz 设置; false: 放行原生通用设置
-     */
     public static boolean onHijackViewCreated(Object fragment, View view, Bundle bundle) {
         try {
             Method getActivityMethod = fragment.getClass().getMethod("getActivity");
@@ -52,22 +48,33 @@ public class ZzzSettingFragment {
 
             ClassLoader cl = activity.getClassLoader();
 
-            // 1. 设置 QQ 官方原厂顶栏标题
-            Method setTitleMethod = fragment.getClass().getMethod("setTitle", CharSequence.class);
-            setTitleMethod.invoke(fragment, "Zzz 设置");
+            // 1. 设置 QQ 原厂顶栏标题
+            try {
+                Method setTitleMethod = fragment.getClass().getMethod("setTitle", CharSequence.class);
+                setTitleMethod.invoke(fragment, "Zzz 设置");
+            } catch (Throwable ignored) {}
 
-            // 2. 获取 QQ 原生的列表适配器 QUIListItemAdapter
-            Method getAdapterMethod = fragment.getClass().getMethod("Zc");
-            Object adapter = getAdapterMethod.invoke(fragment);
+            // 2. 动态自适应获取 QUIListItemAdapter
+            Object adapter = null;
+            for (Method m : fragment.getClass().getMethods()) {
+                if (m.getParameterTypes().length == 0 &&
+                    m.getReturnType().getName().endsWith("QUIListItemAdapter")) {
+                    adapter = m.invoke(fragment);
+                    break;
+                }
+            }
             if (adapter == null) return false;
 
-            // 3. 构建 QQ 原生卡片列表
+            // 3. 构建 QQ 原厂卡片列表
             List<Object> groups = new ArrayList<>();
 
-            // --- 卡片 1: 功能 (带 QQ 原生 Switch 开关) ---
+            // --- 卡片 1: 功能 (Switch 开关列表) ---
+            List<Object> funcItems = new ArrayList<>();
+
+            // 开关 1: 消息防撤回
             File antiRevokeFlag = new File(activity.getFilesDir(), "zzz_anti_revoke_off");
             boolean isAntiRevokeOn = !antiRevokeFlag.exists();
-            Object itemAntiRevoke = createNativeSwitchItem(
+            funcItems.add(createNativeSwitchItem(
                     cl, "消息防撤回", isAntiRevokeOn,
                     (btn, checked) -> {
                         try {
@@ -76,8 +83,22 @@ public class ZzzSettingFragment {
                         } catch (Throwable ignored) {}
                         Toast.makeText(activity, "消息防撤回" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
-            );
-            groups.add(createNativeGroup(cl, "功能", Collections.singletonList(itemAntiRevoke)));
+            ));
+
+            // 开关 2: 喵喵助手 (自动替换文字并在句末加喵)
+            File meowFlag = new File(activity.getFilesDir(), "zzz_meow_helper_on");
+            boolean isMeowOn = meowFlag.exists();
+            funcItems.add(createNativeSwitchItem(
+                    cl, "喵喵助手", isMeowOn,
+                    (btn, checked) -> {
+                        try {
+                            if (checked) meowFlag.createNewFile();
+                            else meowFlag.delete();
+                        } catch (Throwable ignored) {}
+                        Toast.makeText(activity, "喵喵助手" + (checked ? " 已开启喵~" : " 已关闭"), Toast.LENGTH_SHORT).show();
+                    }
+            ));
+            groups.add(createNativeGroup(cl, "功能", funcItems));
 
             // --- 卡片 2: 高级 ---
             File debugFlag = new File(activity.getFilesDir(), "zzz_debug_log_on");
@@ -95,39 +116,64 @@ public class ZzzSettingFragment {
             groups.add(createNativeGroup(cl, "高级", Collections.singletonList(itemDebug)));
 
             // --- 卡片 3: 关于 ---
-            Object itemVersion = createNativeTextItem(cl, "版本号", "v0.0.1");
-            groups.add(createNativeGroup(cl, "关于", Collections.singletonList(itemVersion)));
+            List<Object> aboutItems = new ArrayList<>();
+            aboutItems.add(createNativeTextItem(cl, "版本号", "v0.0.1"));
+            aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", v -> {
+                try {
+                    Intent tgIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(TG_CHANNEL_URL));
+                    tgIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activity.startActivity(tgIntent);
+                } catch (Throwable t) {
+                    Toast.makeText(activity, "打开链接失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+                }
+            }));
+            aboutItems.add(createNativeClickableItem(cl, "GitHub 仓库", "前往", v -> {
+                try {
+                    Intent ghIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL));
+                    ghIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activity.startActivity(ghIntent);
+                } catch (Throwable t) {
+                    Toast.makeText(activity, "打开链接失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+                }
+            }));
+            groups.add(createNativeGroup(cl, "关于", aboutItems));
 
-            // 4. 将卡片数组直接喂给 QQ 原生适配器渲染 (adapter.k0(groups))
+            // 4. 提交卡片数组给 Adapter
             Class<?> groupClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.Group");
             Object groupArray = Array.newInstance(groupClass, groups.size());
             for (int i = 0; i < groups.size(); i++) {
                 Array.set(groupArray, i, groups.get(i));
             }
 
-            Method setConfigsMethod = adapter.getClass().getMethod("k0", groupArray.getClass());
-            setConfigsMethod.invoke(adapter, new Object[]{groupArray});
+            Method setConfigsMethod = null;
+            for (Method m : adapter.getClass().getMethods()) {
+                Class<?>[] pts = m.getParameterTypes();
+                if (pts.length == 1 && pts[0].isArray() &&
+                    pts[0].getComponentType().getName().endsWith("Group")) {
+                    setConfigsMethod = m;
+                    break;
+                }
+            }
 
-            return true;
+            if (setConfigsMethod != null) {
+                setConfigsMethod.invoke(adapter, new Object[]{groupArray});
+                return true;
+            }
+
+            return false;
         } catch (Throwable t) {
             return false;
         }
     }
 
-    /**
-     * 创建 QQ 原生 Switch 开关项 (基于 x$c$f)
-     */
     private static Object createNativeSwitchItem(ClassLoader cl, String title, boolean isChecked, CompoundButton.OnCheckedChangeListener listener) throws Exception {
-        // 左侧标题: new x$b$d(title)
         Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
         Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
         Object leftObj = xbdConst.newInstance(title);
 
-        // 右侧开关: new x$c$f(isChecked, listener, isEnabled)
         Class<?> xcfClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$f");
         Object rightObj = newInstanceSmart(xcfClass, new Object[]{isChecked, listener, true});
 
-        // 组合为 ListItem: new x(left, right)
         Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
         Constructor<?> xConst = xClass.getConstructor(
                 cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b"),
@@ -136,15 +182,11 @@ public class ZzzSettingFragment {
         return xConst.newInstance(leftObj, rightObj);
     }
 
-    /**
-     * 创建 QQ 原生带右侧文字的展示项 (基于 x$c$g)
-     */
     private static Object createNativeTextItem(ClassLoader cl, String title, String rightText) throws Exception {
         Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
         Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
         Object leftObj = xbdConst.newInstance(title);
 
-        // 右侧文字: new x$c$g(rightText, showArrow=false, hasRedDot=false)
         Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
         Object rightObj = newInstanceSmart(xcgClass, new Object[]{rightText, false, false});
 
@@ -156,9 +198,33 @@ public class ZzzSettingFragment {
         return xConst.newInstance(leftObj, rightObj);
     }
 
-    /**
-     * 创建 QQ 原生分组卡片 Group
-     */
+    private static Object createNativeClickableItem(ClassLoader cl, String title, String rightText, View.OnClickListener listener) throws Exception {
+        Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
+        Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
+        Object leftObj = xbdConst.newInstance(title);
+
+        Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
+        Object rightObj = newInstanceSmart(xcgClass, new Object[]{rightText, true, false});
+
+        Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
+        Constructor<?> xConst = xClass.getConstructor(
+                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b"),
+                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c")
+        );
+        Object item = xConst.newInstance(leftObj, rightObj);
+
+        if (listener != null) {
+            for (Method m : item.getClass().getMethods()) {
+                Class<?>[] pts = m.getParameterTypes();
+                if (pts.length == 1 && pts[0] == View.OnClickListener.class) {
+                    m.invoke(item, listener);
+                    break;
+                }
+            }
+        }
+        return item;
+    }
+
     private static Object createNativeGroup(ClassLoader cl, String topTitle, List<Object> items) throws Exception {
         Class<?> itemBaseClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.a");
         Object itemArray = Array.newInstance(itemBaseClass, items.size());
