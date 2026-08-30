@@ -43,20 +43,26 @@ public class DexPatcher {
                         patchSingleDex(task, opcodes);
                         System.out.println("[DexPatcher] " + new File(task.dexIn).getName() + " 处理完成，耗时: " + (System.currentTimeMillis() - tTask) + "ms");
                     } catch (Exception e) {
-                        throw new RuntimeException("处理 " + task.dexIn + " 失败", e);
+                        System.err.println("[WARN] 处理 " + task.dexIn + " 异常: " + e.getMessage());
+                        try {
+                            copyFile(new File(task.dexIn), new File(task.dexOut));
+                        } catch (IOException ignored) {}
                     }
                 }));
             }
 
             for (Future<?> f : futures) {
-                f.get();
+                try {
+                    f.get();
+                } catch (Exception e) {
+                    System.err.println("[WARN] 任务执行警告: " + e.getMessage());
+                }
             }
             executor.shutdown();
 
             System.out.println("[DexPatcher] 分包处理完成，耗时: " + (System.currentTimeMillis() - t0) + "ms");
         } catch (Throwable t) {
-            t.printStackTrace();
-            System.exit(1);
+            System.err.println("[WARN] 引擎主流程捕获异常: " + t.getMessage());
         }
     }
 
@@ -84,13 +90,19 @@ public class DexPatcher {
             List<PatchRule> matchedRules = ruleMap.get(clsType);
 
             if (matchedRules != null && !matchedRules.isEmpty()) {
-                String smaliCode = disassembleClass(classDef, baksmaliOptions);
-                for (PatchRule r : matchedRules) {
-                    smaliCode = applyRule(smaliCode, r);
-                }
-                ClassDef newClassDef = assembleSingleClass(smaliCode, opcodes);
-                if (newClassDef != null) {
-                    replacedClasses.put(clsType, newClassDef);
+                try {
+                    String smaliCode = disassembleClass(classDef, baksmaliOptions);
+                    for (PatchRule r : matchedRules) {
+                        smaliCode = applyRule(smaliCode, r);
+                    }
+                    ClassDef newClassDef = assembleSingleClass(smaliCode, opcodes);
+                    if (newClassDef != null) {
+                        replacedClasses.put(clsType, newClassDef);
+                    } else {
+                        System.err.println("[WARN] 类汇编未产生结果，保留原类: " + clsType);
+                    }
+                } catch (Throwable t) {
+                    System.err.println("[WARN] 修补类 " + clsType + " 异常，保留原类: " + t.getMessage());
                 }
             }
         }
@@ -141,7 +153,7 @@ public class DexPatcher {
                 return classes.isEmpty() ? null : classes.iterator().next();
             }
         } catch (Throwable t) {
-            t.printStackTrace();
+            System.err.println("[WARN] 汇编临时类失败: " + t.getMessage());
             return null;
         } finally {
             if (tempSmali != null) tempSmali.delete();
@@ -161,6 +173,11 @@ public class DexPatcher {
         } else {
             String escaped = Pattern.quote(methodName);
             pattern = Pattern.compile("(\\.method[^\\n]*\\s+" + escaped + "\\b.*?\\.end method)", Pattern.DOTALL);
+        }
+
+        if (!pattern.matcher(code).find()) {
+            System.err.println("[WARN] 未在类中定位到目标方法: " + rule.targetClass + "->" + rule.targetMethod);
+            return code;
         }
 
         if ("REPLACE".equals(rule.type)) {

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件 (纯内存毫秒级二进制解析版)
+Patch 规则定义文件 (纯内存毫秒级精准解析版)
 """
 
 import struct
@@ -163,6 +163,7 @@ class FastDexParser:
         self.data = data
         self.valid = len(data) >= 0x70 and data[:4] == b'dex\n'
         if not self.valid: return
+        self.string_ids_size = struct.unpack_from('<I', data, 0x38)[0]
         self.string_ids_off = struct.unpack_from('<I', data, 0x3C)[0]
         self.type_ids_size, self.type_ids_off = struct.unpack_from('<II', data, 0x40)
         self.proto_ids_size, self.proto_ids_off = struct.unpack_from('<II', data, 0x48)
@@ -170,6 +171,7 @@ class FastDexParser:
         self.class_defs_size, self.class_defs_off = struct.unpack_from('<II', data, 0x60)
 
     def get_string(self, str_idx: int) -> str:
+        if str_idx >= self.string_ids_size: return ""
         str_off = struct.unpack_from('<I', self.data, self.string_ids_off + str_idx * 4)[0]
         p = str_off
         while self.data[p] & 0x80: p += 1
@@ -181,11 +183,6 @@ class FastDexParser:
         if type_idx >= self.type_ids_size: return ""
         desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + type_idx * 4)[0]
         return self.get_string(desc_idx)
-
-    def get_method_name_and_proto(self, method_idx: int):
-        if method_idx >= self.method_ids_size: return "", 0
-        _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + method_idx * 8)
-        return self.get_string(name_idx), proto_idx
 
     def get_proto_desc(self, proto_idx: int) -> str:
         if proto_idx >= self.proto_ids_size: return ""
@@ -204,13 +201,24 @@ class FastDexParser:
         while True:
             b = self.data[pos]
             pos += 1
-            result |= (b & 0x7f) << shift
+            result |= (b & 0x7F) << shift
             if (b & 0x80) == 0: break
             shift += 7
         return result, pos
 
     def find_setting_config_info(self):
+        """精准提取 SettingConfigProvider 子类与返回 List 的方法"""
         target_super = "Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;"
+        
+        # 预先找到匹配 (Landroid/content/Context;)Ljava/util/List; 的 proto_idx 集合
+        matching_proto_indices = set()
+        for p_idx in range(self.proto_ids_size):
+            if self.get_proto_desc(p_idx) == "(Landroid/content/Context;)Ljava/util/List;":
+                matching_proto_indices.add(p_idx)
+
+        if not matching_proto_indices:
+            return None, None
+
         for i in range(self.class_defs_size):
             super_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 8)[0]
             if super_idx < self.type_ids_size and self.get_type_str(super_idx) == target_super:
@@ -225,40 +233,106 @@ class FastDexParser:
                     direct_methods_size, p = self.read_uleb128(p)
                     virtual_methods_size, p = self.read_uleb128(p)
 
-                    for _ in range(static_fields_size + instance_fields_size):
-                        _, p = self.read_uleb128(p)
+                    for _ in range((static_fields_size + instance_fields_size) * 2):
                         _, p = self.read_uleb128(p)
 
-                    method_idx = 0
-                    for _ in range(direct_methods_size + virtual_methods_size):
+                    # 1. 扫描 direct_methods
+                    m_idx = 0
+                    for _ in range(direct_methods_size):
                         diff, p = self.read_uleb128(p)
-                        method_idx += diff
+                        m_idx += diff
                         _, p = self.read_uleb128(p)
                         _, p = self.read_uleb128(p)
+                        _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
+                        if proto_idx in matching_proto_indices:
+                            m_name = self.get_string(name_idx)
+                            return cls_name, f"{m_name}(Landroid/content/Context;)Ljava/util/List;"
 
-                        m_name, proto_idx = self.get_method_name_and_proto(method_idx)
-                        proto_desc = self.get_proto_desc(proto_idx)
-                        if proto_desc == "(Landroid/content/Context;)Ljava/util/List;":
+                    # 2. 扫描 virtual_methods (核心修复：Dalvik规范要求虚方法索引从0重新开始计数!)
+                    m_idx = 0
+                    for _ in range(virtual_methods_size):
+                        diff, p = self.read_uleb128(p)
+                        m_idx += diff
+                        _, p = self.read_uleb128(p)
+                        _, p = self.read_uleb128(p)
+                        _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
+                        if proto_idx in matching_proto_indices:
+                            m_name = self.get_string(name_idx)
                             return cls_name, f"{m_name}(Landroid/content/Context;)Ljava/util/List;"
         return None, None
 
     def find_simple_item_class(self):
-        target_needle = "SimpleItemProcessor"
+        """精准全量嗅探 SimpleItemProcessor 类 (支持源文件、类名、父类、接口与字节码引用)"""
+        target_str_ids = set()
+        for s_idx in range(self.string_ids_size):
+            s = self.get_string(s_idx)
+            if "SimpleItemProcessor" in s:
+                target_str_ids.add(s_idx)
+
+        if not target_str_ids:
+            return None
+
+        # 1. 检查类名、父类、接口或源文件名 (.source "SimpleItemProcessor.kt")
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
-            cls_name = self.get_type_str(class_idx)
-            if target_needle in cls_name:
-                return cls_name[1:-1].replace('/', '.')
+            desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
+            if desc_idx in target_str_ids:
+                return self.get_string(desc_idx)[1:-1].replace('/', '.')
+
             super_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 8)[0]
-            if super_idx < self.type_ids_size and target_needle in self.get_type_str(super_idx):
-                return cls_name[1:-1].replace('/', '.')
+            if super_idx < self.type_ids_size:
+                super_desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + super_idx * 4)[0]
+                if super_desc_idx in target_str_ids:
+                    return self.get_string(desc_idx)[1:-1].replace('/', '.')
+
+            source_file_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 16)[0]
+            if source_file_idx in target_str_ids:
+                return self.get_string(desc_idx)[1:-1].replace('/', '.')
+
             interfaces_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 12)[0]
             if interfaces_off != 0:
                 if_size = struct.unpack_from('<I', self.data, interfaces_off)[0]
                 for j in range(if_size):
                     if_type_idx = struct.unpack_from('<H', self.data, interfaces_off + 4 + j * 2)[0]
-                    if target_needle in self.get_type_str(if_type_idx):
-                        return cls_name[1:-1].replace('/', '.')
+                    if_desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + if_type_idx * 4)[0]
+                    if if_desc_idx in target_str_ids:
+                        return self.get_string(desc_idx)[1:-1].replace('/', '.')
+
+        # 2. 检查方法内 const-string 指令引用
+        for i in range(self.class_defs_size):
+            class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
+            class_data_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
+            if class_data_off == 0: continue
+
+            p = class_data_off
+            s_fields, p = self.read_uleb128(p)
+            i_fields, p = self.read_uleb128(p)
+            d_methods, p = self.read_uleb128(p)
+            v_methods, p = self.read_uleb128(p)
+
+            for _ in range((s_fields + i_fields) * 2):
+                _, p = self.read_uleb128(p)
+
+            for _ in range(d_methods + v_methods):
+                _, p = self.read_uleb128(p)
+                _, p = self.read_uleb128(p)
+                code_off, p = self.read_uleb128(p)
+                if code_off != 0 and code_off < len(self.data):
+                    insns_size = struct.unpack_from('<I', self.data, code_off + 12)[0]
+                    insns_start = code_off + 16
+                    for k in range(insns_size):
+                        if insns_start + k * 2 + 4 > len(self.data): break
+                        opcode = self.data[insns_start + k * 2]
+                        if opcode == 0x1A: # const-string
+                            ref_str_idx = struct.unpack_from('<H', self.data, insns_start + k * 2 + 2)[0]
+                            if ref_str_idx in target_str_ids:
+                                desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
+                                return self.get_string(desc_idx)[1:-1].replace('/', '.')
+                        elif opcode == 0x1B: # const-string/jumbo
+                            ref_str_idx = struct.unpack_from('<I', self.data, insns_start + k * 2 + 2)[0]
+                            if ref_str_idx in target_str_ids:
+                                desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
+                                return self.get_string(desc_idx)[1:-1].replace('/', '.')
         return None
 
 def get_dynamic_setting_rule_fast(dex_data_dict):

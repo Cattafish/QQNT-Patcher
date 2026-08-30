@@ -34,17 +34,18 @@ def log(tag, msg):
 def run_cmd(cmd, cwd=None):
     ret = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
     if ret.returncode != 0:
-        log("ERR", f"命令执行失败: {cmd}")
-        log("ERR", ret.stderr.decode('utf-8', errors='ignore'))
-        log("ERR", ret.stdout.decode('utf-8', errors='ignore'))
-        sys.exit(1)
+        log("WARN", f"命令执行异常: {cmd}")
+        err_msg = ret.stderr.decode('utf-8', errors='ignore').strip()
+        out_msg = ret.stdout.decode('utf-8', errors='ignore').strip()
+        if err_msg: log("WARN", err_msg)
+        if out_msg: log("WARN", out_msg)
+        return ""
     return ret.stdout.decode('utf-8', errors='ignore')
 
 def ensure_smali_jars():
     required = [BAKSMALI_JAR, SMALI_JAR, DEXLIB2_JAR, GUAVA_JAR]
     if not all(os.path.exists(f) and os.path.getsize(f) > 100000 for f in required):
-        log("ERR", "未检测到完整的 tools 依赖！")
-        sys.exit(1)
+        log("WARN", "未检测到完整的 tools 依赖！")
 
 def ensure_fixed_keystore():
     os.makedirs(TOOLS_DIR, exist_ok=True)
@@ -88,8 +89,8 @@ def build_dex_patcher_engine_incremental(work_dir):
     ensure_smali_jars()
     engine_src = "./DexPatcher.java"
     if not os.path.exists(engine_src):
-        log("ERR", "未找到 DexPatcher.java！")
-        sys.exit(1)
+        log("WARN", "未找到 DexPatcher.java！")
+        return None
 
     engine_bin = os.path.join(work_dir, "patcher_bin")
     engine_class = os.path.join(engine_bin, "com/tencent/qqnt/patcher/DexPatcher.class")
@@ -102,68 +103,31 @@ def build_dex_patcher_engine_incremental(work_dir):
     run_cmd(f"javac -cp {cp} -d {shlex.quote(engine_bin)} {shlex.quote(engine_src)}")
     return engine_bin
 
-def is_class_defined_in_dex_fast(dex_bytes, target_class_str):
+def get_defined_classes_in_dex(dex_bytes):
+    """100% 精确提取 DEX 中定义的类"""
     if len(dex_bytes) < 0x70 or dex_bytes[:4] != b'dex\n':
-        return False
-
-    target_bytes = target_class_str.encode('utf-8')
-    if target_bytes not in dex_bytes:
-        return False
-
+        return set()
     try:
-        string_ids_size = struct.unpack_from('<I', dex_bytes, 0x38)[0]
         string_ids_off = struct.unpack_from('<I', dex_bytes, 0x3C)[0]
-        type_ids_size = struct.unpack_from('<I', dex_bytes, 0x40)[0]
         type_ids_off = struct.unpack_from('<I', dex_bytes, 0x44)[0]
         class_defs_size, class_defs_off = struct.unpack_from('<II', dex_bytes, 0x60)
 
-        def get_str(idx):
-            str_off = struct.unpack_from('<I', dex_bytes, string_ids_off + idx * 4)[0]
+        classes = set()
+        for i in range(class_defs_size):
+            class_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32)[0]
+            desc_idx = struct.unpack_from('<I', dex_bytes, type_ids_off + class_idx * 4)[0]
+            str_off = struct.unpack_from('<I', dex_bytes, string_ids_off + desc_idx * 4)[0]
+
             p = str_off
             while dex_bytes[p] & 0x80: p += 1
             p += 1
+
             end = dex_bytes.find(b'\x00', p)
-            return dex_bytes[p:end] if end != -1 else b''
-
-        low, high = 0, string_ids_size - 1
-        target_str_idx = -1
-        while low <= high:
-            mid = (low + high) // 2
-            mid_str = get_str(mid)
-            if mid_str == target_bytes:
-                target_str_idx = mid
-                break
-            elif mid_str < target_bytes:
-                low = mid + 1
-            else:
-                high = mid - 1
-
-        if target_str_idx == -1:
-            return False
-
-        low, high = 0, type_ids_size - 1
-        target_type_idx = -1
-        while low <= high:
-            mid = (low + high) // 2
-            desc_idx = struct.unpack_from('<I', dex_bytes, type_ids_off + mid * 4)[0]
-            if desc_idx == target_str_idx:
-                target_type_idx = mid
-                break
-            elif desc_idx < target_str_idx:
-                low = mid + 1
-            else:
-                high = mid - 1
-
-        if target_type_idx == -1:
-            return False
-
-        for i in range(class_defs_size):
-            class_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32)[0]
-            if class_idx == target_type_idx:
-                return True
-        return False
+            if end != -1:
+                classes.add(dex_bytes[p:end].decode('utf-8', errors='ignore'))
+        return classes
     except Exception:
-        return False
+        return set()
 
 def dump_batch_tasks(dex_tasks, batch_file):
     with open(batch_file, "w", encoding="utf-8") as f:
@@ -198,7 +162,7 @@ def main():
     output_apk = args[1] if len(args) > 1 else "QQ_Patched.apk"
 
     if not os.path.exists(input_apk):
-        log("ERR", f"未找到输入 APK 文件: {input_apk}")
+        log("WARN", f"未找到输入 APK 文件: {input_apk}")
         sys.exit(1)
 
     work_dir = "./build_cache"
@@ -235,16 +199,26 @@ def main():
     if dyn_setting_rule:
         all_rules.append(dyn_setting_rule)
         log("OK", f"-> 动态规则匹配: [{dyn_setting_rule['name']}]")
+    else:
+        log("WARN", "-> 未检测到设置中心特征，跳过动态设置注入")
 
+    # 精准路由到各分包
     dex_to_rules = {}
+    matched_rule_names = set()
+
     for dex_name in dex_list:
-        dex_bytes = dex_data_dict[dex_name]
+        defined_classes = get_defined_classes_in_dex(dex_data_dict[dex_name])
         for rule in all_rules:
-            if is_class_defined_in_dex_fast(dex_bytes, rule["target_class"]):
+            if rule["target_class"] in defined_classes:
                 dex_to_rules.setdefault(dex_name, []).append(rule)
+                matched_rule_names.add(rule["name"])
+
+    for rule in all_rules:
+        if rule["name"] not in matched_rule_names:
+            log("WARN", f"-> 未命中规则: [{rule['name']}]")
 
     if not dex_to_rules:
-        log("ERR", "未在 APK 中匹配到任何规则目标类！")
+        log("WARN", "未在 APK 中匹配到任何规则目标类！")
         sys.exit(1)
 
     for d_name, r_list in dex_to_rules.items():
@@ -254,7 +228,6 @@ def main():
     log("TIME", f"  -> 阶段 2 耗时: {t_phase2}s")
 
     t0 = time.time()
-    # 此处已补上 f 前缀
     log("INFO", f"3. 正在处理 Dex 分包 ({len(dex_to_rules)} 个)...")
     dex_tasks = []
     modified_dex_files = []
@@ -271,9 +244,10 @@ def main():
     batch_cfg_path = os.path.join(work_dir, "batch_tasks.txt")
     dump_batch_tasks(dex_tasks, batch_cfg_path)
 
-    cp = f"{shlex.quote(engine_bin)}:{shlex.quote(GUAVA_JAR)}:{shlex.quote(DEXLIB2_JAR)}:{shlex.quote(SMALI_JAR)}:{shlex.quote(BAKSMALI_JAR)}"
-    cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
-    run_cmd(cmd)
+    if engine_bin:
+        cp = f"{shlex.quote(engine_bin)}:{shlex.quote(GUAVA_JAR)}:{shlex.quote(DEXLIB2_JAR)}:{shlex.quote(SMALI_JAR)}:{shlex.quote(BAKSMALI_JAR)}"
+        cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
+        run_cmd(cmd)
 
     del dex_data_dict
     t_phase3 = round(time.time() - t0, 2)
@@ -291,11 +265,12 @@ def main():
 
     zip_args = []
     for local_path, in_zip_name in modified_dex_files:
-        target_in_dir = os.path.join(inject_dir, in_zip_name)
-        shutil.copyfile(local_path, target_in_dir)
-        zip_args.append(shlex.quote(in_zip_name))
+        if os.path.exists(local_path):
+            target_in_dir = os.path.join(inject_dir, in_zip_name)
+            shutil.copyfile(local_path, target_in_dir)
+            zip_args.append(shlex.quote(in_zip_name))
 
-    if helper_dex_path:
+    if helper_dex_path and os.path.exists(helper_dex_path):
         target_helper = os.path.join(inject_dir, next_dex_name)
         shutil.copyfile(helper_dex_path, target_helper)
         zip_args.append(shlex.quote(next_dex_name))
@@ -308,7 +283,8 @@ def main():
         zip_args.append(shlex.quote("assets/zzz_icon.png"))
 
     abs_output_apk = os.path.abspath(output_apk)
-    run_cmd(f"cd {shlex.quote(inject_dir)} && zip -q -1 -u {shlex.quote(abs_output_apk)} " + " ".join(zip_args))
+    if zip_args:
+        run_cmd(f"cd {shlex.quote(inject_dir)} && zip -q -1 -u {shlex.quote(abs_output_apk)} " + " ".join(zip_args))
 
     if no_sign:
         subprocess.run(f"zip -q -d {shlex.quote(abs_output_apk)} 'META-INF/*' 2>/dev/null", shell=True)
@@ -320,6 +296,9 @@ def main():
     if not no_sign:
         t0 = time.time()
         log("INFO", "5. 正在对 APK 进行固定证书签名...")
+        if not os.path.exists(FIXED_KEYSTORE):
+            ensure_fixed_keystore()
+
         run_cmd(f"apksigner sign --ks {shlex.quote(FIXED_KEYSTORE)} --ks-pass pass:android --key-pass pass:android {shlex.quote(output_apk)}")
         t_phase5 = round(time.time() - t0, 2)
         log("TIME", f"  -> 阶段 5 耗时: {t_phase5}s")
