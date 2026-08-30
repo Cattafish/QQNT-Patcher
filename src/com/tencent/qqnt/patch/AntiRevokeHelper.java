@@ -10,7 +10,6 @@ import com.tencent.qqnt.ntrelation.friendsinfo.api.IFriendsInfoService;
 import com.tencent.relation.common.api.IRelationNTUinAndUidApi;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -25,26 +24,9 @@ public class AntiRevokeHelper {
     private static final long BUSI_ID_C2C = 2021L;
     private static final long BUSI_ID_GROUP = 2022L;
 
-    private static File sDisableFlagFile = null;
-
-    // === 【跨进程 Linux VFS 状态检测：0 毫秒穿透所有子进程】 ===
     public static boolean isAntiRevokeEnabled() {
-        if (sDisableFlagFile == null) {
-            try {
-                Class<?> appClass = Class.forName("com.tencent.qphone.base.util.BaseApplication");
-                android.content.Context ctx = (android.content.Context) appClass.getMethod("getContext").invoke(null);
-                if (ctx != null) {
-                    sDisableFlagFile = new File(ctx.getFilesDir(), "zzz_anti_revoke_off");
-                }
-            } catch (Throwable ignored) {}
-        }
-        // 如果禁令文件存在，说明用户在设置界面关闭了防撤回
-        if (sDisableFlagFile != null) {
-            return !sDisableFlagFile.exists();
-        }
-        return true;
+        return ConfigManager.isAntiRevokeEnabled();
     }
-    // ========================================================
 
     private static final Set<String> revokedCache = Collections.synchronizedSet(
             Collections.newSetFromMap(new LinkedHashMap<String, Boolean>(100, 0.75f, true) {
@@ -56,12 +38,14 @@ public class AntiRevokeHelper {
     );
 
     public static byte[] handleMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
+        // ★ 每次冷启动 QQ 仅触发 1 次静默检查更新
+        ConfigManager.triggerColdStartUpdateCheck();
+
         if (cmd == null || buf == null) {
             return buf;
         }
 
-        // 跨进程检测：如果用户在设置里关闭了防撤回，直接全量放行
-        if (!isAntiRevokeEnabled()) {
+        if (!ConfigManager.isAntiRevokeEnabled()) {
             return buf;
         }
 
@@ -71,12 +55,12 @@ public class AntiRevokeHelper {
                 try {
                     boolean isSelf = processRecall(session, buf, revokeType);
                     if (isSelf) {
-                        return buf; // 自己撤回消息 -> 正常放行
+                        return buf;
                     }
                 } catch (Throwable t) {
                     Log.e(TAG, "处理撤回灰条异常", t);
                 }
-                return null; // 他人撤回 -> 拦截销毁
+                return null;
             }
             return buf;
         }

@@ -8,4 +8,5 @@ public class Activity extends Context {
     public void finish() {}
     public void setContentView(View view, ViewGroup.LayoutParams params) {}
     public void startActivity(Intent intent) {}
+    public void runOnUiThread(Runnable action) {}
 }

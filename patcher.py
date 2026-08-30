@@ -104,7 +104,6 @@ def build_dex_patcher_engine_incremental(work_dir):
     return engine_bin
 
 def get_defined_classes_in_dex(dex_bytes):
-    """100% 精确提取 DEX 中定义的类"""
     if len(dex_bytes) < 0x70 or dex_bytes[:4] != b'dex\n':
         return set()
     try:
@@ -202,7 +201,6 @@ def main():
     else:
         log("WARN", "-> 未检测到设置中心特征，跳过动态设置注入")
 
-    # 精准路由到各分包
     dex_to_rules = {}
     matched_rule_names = set()
 
@@ -288,6 +286,16 @@ def main():
 
     if no_sign:
         subprocess.run(f"zip -q -d {shlex.quote(abs_output_apk)} 'META-INF/*' 2>/dev/null", shell=True)
+
+    # 4 字节页面对齐 (zipalign)
+    zipalign_bin = shutil.which("zipalign")
+    if zipalign_bin:
+        aligned_apk = os.path.join(work_dir, "aligned_temp.apk")
+        run_cmd(f"{shlex.quote(zipalign_bin)} -p -f 4 {shlex.quote(abs_output_apk)} {shlex.quote(aligned_apk)}")
+        if os.path.exists(aligned_apk) and os.path.getsize(aligned_apk) > 0:
+            shutil.move(aligned_apk, abs_output_apk)
+    else:
+        log("WARN", "未检测到 zipalign 工具，跳过 4 字节对齐")
 
     t_phase4 = round(time.time() - t0, 2)
     log("TIME", f"  -> 阶段 4 耗时: {t_phase4}s")

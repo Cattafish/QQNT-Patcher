@@ -10,10 +10,6 @@ import android.text.Spanned;
 import android.text.style.ImageSpan;
 import android.util.Log;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.ImageView;
-import android.widget.TextView;
-import android.widget.Toast;
 
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
@@ -26,13 +22,8 @@ import java.util.List;
 
 public class SettingInjector {
     private static final String TAG = "QQ_DEBUG";
-
-    // ==========================================
-    // 自定义配置区
-    // ==========================================
-    private static final String TITLE_TEXT = "Zzz";          // 左侧主标题
-    private static final String RIGHT_SUB_TEXT = "v0.0.1";    // 右侧副标题/版本号
-    private static final boolean SHOW_ARROW = true;           // 是否显示右侧小箭头 (true: 显示, false: 隐藏)
+    private static final String TITLE_TEXT = "Zzz";
+    private static final boolean SHOW_ARROW = true;
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static void inject(Context context, List resultList, String itemClassName) {
@@ -44,7 +35,6 @@ public class SettingInjector {
             ClassLoader cl = context.getClassLoader();
             Class<?> itemClass = cl.loadClass(itemClassName);
 
-            // 1. 设置主标题并在图标与文字间留出空格
             CharSequence finalTitle = TITLE_TEXT;
             try {
                 InputStream is = context.getAssets().open("zzz_icon.png");
@@ -60,19 +50,12 @@ public class SettingInjector {
                     sp.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                     finalTitle = sp;
                 }
-            } catch (Throwable t) {
-                Log.w(TAG, "从 assets 加载 zzz_icon.png 失败: " + t.getMessage());
-            }
+            } catch (Throwable ignored) {}
 
-            // 2. 实例化 ItemProcessor 对象
             Object[] preferredItemArgs = new Object[]{context, 10, finalTitle, 0, null};
             Object mySettingItem = newInstanceSmart(itemClass, preferredItemArgs);
-            if (mySettingItem == null) {
-                Log.e(TAG, "无法实例化 Item: " + itemClassName);
-                return;
-            }
+            if (mySettingItem == null) return;
 
-            // 3. 注入点击事件 (Function0)
             Class<?> func0Class = cl.loadClass("kotlin.jvm.functions.Function0");
             Object unitInstance = getKotlinUnitInstance(cl);
 
@@ -81,14 +64,12 @@ public class SettingInjector {
                     new Class[]{func0Class},
                     (proxy, method, args) -> {
                         if ("invoke".equals(method.getName())) {
-                            // 【核心】：直接启动 QQ 原生二级设置 Fragment！
                             ZzzSettingFragment.start(context);
                         }
                         return unitInstance;
                     }
             );
 
-            // 寻找 B(Function0) 绑定点击
             for (Method m : itemClass.getMethods()) {
                 Class<?>[] pts = m.getParameterTypes();
                 if (pts.length == 1 && pts[0] == func0Class && m.getReturnType() == void.class) {
@@ -97,7 +78,7 @@ public class SettingInjector {
                 }
             }
 
-            // 4. 【核心黑科技】：利用 Function1 拦截原生 View 绘制，写入右侧小字与控制箭头
+            // ★ 绑定原生 View 渲染回调，挂载 [QQ 原厂 QUIBadge 红点 + 版本号]
             Class<?> func1Class = cl.loadClass("kotlin.jvm.functions.Function1");
             Object viewBindProxy = Proxy.newProxyInstance(
                     cl,
@@ -105,14 +86,14 @@ public class SettingInjector {
                     (proxy, method, args) -> {
                         if ("invoke".equals(method.getName()) && args != null && args.length == 1) {
                             if (args[0] instanceof View) {
-                                setupRightSideView((View) args[0], RIGHT_SUB_TEXT, SHOW_ARROW);
+                                boolean hasNew = ConfigManager.hasNewVersion();
+                                QUIBadgeHelper.attachNativeBadge((View) args[0], ConfigManager.VERSION, hasNew, SHOW_ARROW);
                             }
                         }
                         return unitInstance;
                     }
             );
 
-            // 寻找 C(Function1) 绑定 View 绘制监听
             for (Method m : itemClass.getMethods()) {
                 Class<?>[] pts = m.getParameterTypes();
                 if (pts.length == 1 && pts[0] == func1Class && m.getReturnType() == void.class) {
@@ -121,7 +102,6 @@ public class SettingInjector {
                 }
             }
 
-            // 5. 实例化 Group 对象
             Object firstGroup = resultList.get(0);
             Class<?> groupClass = firstGroup.getClass();
 
@@ -140,62 +120,15 @@ public class SettingInjector {
                 } else {
                     resultList.add(myGroup);
                 }
-                Log.d(TAG, "设置项成功注入！");
             }
 
         } catch (Throwable t) {
-            Log.e(TAG, "设置中心注入异常: ", t);
-        }
-    }
-
-    /**
-     * 动态遍历 View 树，定位并设置右侧文本及箭头状态
-     */
-    private static void setupRightSideView(View root, String rightText, boolean showArrow) {
-        if (!(root instanceof ViewGroup)) return;
-        try {
-            ViewGroup vg = (ViewGroup) root;
-            List<TextView> textViews = new ArrayList<>();
-            List<ImageView> imageViews = new ArrayList<>();
-            collectViews(vg, textViews, imageViews);
-
-            // 1. 设置右侧文本
-            for (TextView tv : textViews) {
-                CharSequence currentText = tv.getText();
-                // 排除包含主标题的左侧 TextView
-                if (currentText == null || !currentText.toString().contains(TITLE_TEXT)) {
-                    tv.setText(rightText);
-                    tv.setVisibility(View.VISIBLE);
-                    tv.setAlpha(0.6f); // 优雅的半透明灰字效果
-                }
-            }
-
-            // 2. 自定义右侧箭头
-            if (!showArrow && !imageViews.isEmpty()) {
-                // 列表项中最右侧的 ImageView 通常就是向右的小箭头
-                ImageView arrowView = imageViews.get(imageViews.size() - 1);
-                arrowView.setVisibility(View.GONE);
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "设置右侧视图异常: " + t.getMessage());
-        }
-    }
-
-    private static void collectViews(ViewGroup vg, List<TextView> textViews, List<ImageView> imageViews) {
-        int count = vg.getChildCount();
-        for (int i = 0; i < count; i++) {
-            View child = vg.getChildAt(i);
-            if (child instanceof TextView) {
-                textViews.add((TextView) child);
-            } else if (child instanceof ImageView) {
-                imageViews.add((ImageView) child);
-            } else if (child instanceof ViewGroup) {
-                collectViews((ViewGroup) child, textViews, imageViews);
-            }
+            Log.e(TAG, "设置中心注入异常", t);
         }
     }
 
     private static Object newInstanceSmart(Class<?> clazz, Object[] preferredArgs) {
+        if (clazz == null) return null;
         Constructor<?>[] constructors = clazz.getDeclaredConstructors();
         for (Constructor<?> c : constructors) {
             try {
@@ -231,8 +164,7 @@ public class SettingInjector {
                 }
 
                 return c.newInstance(args);
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) {}
         }
         return null;
     }

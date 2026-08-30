@@ -9,10 +9,10 @@ import android.view.View;
 import android.widget.CompoundButton;
 import android.widget.Toast;
 
-import java.io.File;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -20,8 +20,6 @@ import java.util.List;
 public class ZzzSettingFragment {
 
     public static final String EXTRA_FLAG = "open_zzz_settings";
-    private static final String TG_CHANNEL_URL = "https://t.me/ZcraftMod";
-    private static final String GITHUB_REPO_URL = "https://github.com/Cattafish/QQNT-Patcher";
 
     public static void start(Context context) {
         try {
@@ -54,7 +52,7 @@ public class ZzzSettingFragment {
                 setTitleMethod.invoke(fragment, "Zzz 设置");
             } catch (Throwable ignored) {}
 
-            // 2. 动态自适应获取 QUIListItemAdapter
+            // 2. 动态获取 QUIListItemAdapter
             Object adapter = null;
             for (Method m : fragment.getClass().getMethods()) {
                 if (m.getParameterTypes().length == 0 &&
@@ -65,65 +63,45 @@ public class ZzzSettingFragment {
             }
             if (adapter == null) return false;
 
-            // 3. 构建 QQ 原厂卡片列表
+            // 3. 构建卡片列表
             List<Object> groups = new ArrayList<>();
 
             // --- 卡片 1: 功能 (Switch 开关列表) ---
             List<Object> funcItems = new ArrayList<>();
 
             // 开关 1: 消息防撤回
-            File antiRevokeFlag = new File(activity.getFilesDir(), "zzz_anti_revoke_off");
-            boolean isAntiRevokeOn = !antiRevokeFlag.exists();
             funcItems.add(createNativeSwitchItem(
-                    cl, "消息防撤回", isAntiRevokeOn,
+                    cl, "消息防撤回", ConfigManager.isAntiRevokeEnabled(),
                     (btn, checked) -> {
-                        try {
-                            if (checked) antiRevokeFlag.delete();
-                            else antiRevokeFlag.createNewFile();
-                        } catch (Throwable ignored) {}
+                        ConfigManager.setAntiRevokeEnabled(checked);
                         Toast.makeText(activity, "消息防撤回" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
             ));
 
-            // 开关 2: 闪照破解 (直接将闪照作为普通图片展示与保存)
-            File flashPicFlag = new File(activity.getFilesDir(), "zzz_flash_pic_off");
-            boolean isFlashPicOn = !flashPicFlag.exists();
+            // 开关 2: 闪照破解
             funcItems.add(createNativeSwitchItem(
-                    cl, "闪照破解", isFlashPicOn,
+                    cl, "闪照破解", ConfigManager.isFlashPicDecryptEnabled(),
                     (btn, checked) -> {
-                        try {
-                            if (checked) flashPicFlag.delete();
-                            else flashPicFlag.createNewFile();
-                        } catch (Throwable ignored) {}
+                        ConfigManager.setFlashPicDecryptEnabled(checked);
                         Toast.makeText(activity, "闪照破解" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
             ));
 
             // 开关 3: 喵喵助手
-            File meowFlag = new File(activity.getFilesDir(), "zzz_meow_helper_on");
-            boolean isMeowOn = meowFlag.exists();
             funcItems.add(createNativeSwitchItem(
-                    cl, "喵喵助手", isMeowOn,
+                    cl, "喵喵助手", ConfigManager.isMeowEnabled(),
                     (btn, checked) -> {
-                        try {
-                            if (checked) meowFlag.createNewFile();
-                            else meowFlag.delete();
-                        } catch (Throwable ignored) {}
+                        ConfigManager.setMeowEnabled(checked);
                         Toast.makeText(activity, "喵喵助手" + (checked ? " 已开启喵~" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
             ));
             groups.add(createNativeGroup(cl, "功能", funcItems));
 
             // --- 卡片 2: 高级 ---
-            File debugFlag = new File(activity.getFilesDir(), "zzz_debug_log_on");
-            boolean isDebugOn = debugFlag.exists();
             Object itemDebug = createNativeSwitchItem(
-                    cl, "调试日志输出", isDebugOn,
+                    cl, "调试日志输出", ConfigManager.isDebugLogEnabled(),
                     (btn, checked) -> {
-                        try {
-                            if (checked) debugFlag.createNewFile();
-                            else debugFlag.delete();
-                        } catch (Throwable ignored) {}
+                        ConfigManager.setDebugLogEnabled(checked);
                         Toast.makeText(activity, "调试日志" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
             );
@@ -131,10 +109,16 @@ public class ZzzSettingFragment {
 
             // --- 卡片 3: 关于 ---
             List<Object> aboutItems = new ArrayList<>();
-            aboutItems.add(createNativeTextItem(cl, "版本号", "v0.0.1"));
+            aboutItems.add(createNativeTextItem(cl, "当前版本", ConfigManager.VERSION));
+
+            // ★【检查更新项】：通过 a.w(g) 挂载 [QQ 原厂 QUIBadge 红点 + 获取最新版]
+            aboutItems.add(createNativeUpdateItem(cl, "检查更新", ConfigManager.hasNewVersion(), v -> {
+                UpdateHelper.checkUpdate(activity);
+            }));
+
             aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", v -> {
                 try {
-                    Intent tgIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(TG_CHANNEL_URL));
+                    Intent tgIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.TG_CHANNEL_URL));
                     tgIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     activity.startActivity(tgIntent);
                 } catch (Throwable t) {
@@ -143,7 +127,7 @@ public class ZzzSettingFragment {
             }));
             aboutItems.add(createNativeClickableItem(cl, "GitHub 仓库", "前往", v -> {
                 try {
-                    Intent ghIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL));
+                    Intent ghIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.GITHUB_REPO_URL));
                     ghIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     activity.startActivity(ghIntent);
                 } catch (Throwable t) {
@@ -178,6 +162,57 @@ public class ZzzSettingFragment {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /**
+     * 核心：通过 a.w(g) 注入 [QQ 官方 QUIBadge 红点 + 获取最新版]
+     */
+    private static Object createNativeUpdateItem(ClassLoader cl, String title, boolean hasNewVersion, View.OnClickListener listener) throws Exception {
+        Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
+        Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
+        Object leftObj = xbdConst.newInstance(title);
+
+        Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
+        Object rightObj = newInstanceSmart(xcgClass, new Object[]{"获取最新版", true, false});
+
+        Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
+        Constructor<?> xConst = xClass.getConstructor(
+                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b"),
+                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c")
+        );
+        Object item = xConst.newInstance(leftObj, rightObj);
+
+        // 1. 绑定点击事件
+        if (listener != null) {
+            for (Method m : item.getClass().getMethods()) {
+                Class<?>[] pts = m.getParameterTypes();
+                if (pts.length == 1 && pts[0] == View.OnClickListener.class) {
+                    m.invoke(item, listener);
+                    break;
+                }
+            }
+        }
+
+        // 2. 绑定 a.w(g) 拦截 View 渲染，注入 QQ 原生 QUIBadge 红点
+        try {
+            Class<?> gClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.g");
+            Object gProxy = Proxy.newProxyInstance(cl, new Class<?>[]{gClass}, (proxy, method, args) -> {
+                if ("G".equals(method.getName()) && args != null && args.length == 1 && args[0] instanceof View) {
+                    QUIBadgeHelper.attachNativeBadge((View) args[0], "获取最新版", hasNewVersion, true);
+                }
+                return null;
+            });
+
+            for (Method m : item.getClass().getMethods()) {
+                Class<?>[] pts = m.getParameterTypes();
+                if ("w".equals(m.getName()) && pts.length == 1 && pts[0] == gClass) {
+                    m.invoke(item, gProxy);
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        return item;
     }
 
     private static Object createNativeSwitchItem(ClassLoader cl, String title, boolean isChecked, CompoundButton.OnCheckedChangeListener listener) throws Exception {
@@ -252,6 +287,7 @@ public class ZzzSettingFragment {
     }
 
     private static Object newInstanceSmart(Class<?> clazz, Object[] preferredArgs) {
+        if (clazz == null) return null;
         Constructor<?>[] constructors = clazz.getDeclaredConstructors();
         for (Constructor<?> c : constructors) {
             try {
