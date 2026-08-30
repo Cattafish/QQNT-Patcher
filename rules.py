@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件 (纯内存毫秒级精准解析版)
+Patch 规则定义文件 (已修复画廊 VerifyError 字节码对齐)
 """
 
 import struct
@@ -88,23 +88,23 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgList(Ljava/util/List;)V
 """
     },
-    # 规则 6：画廊大图放行
+    # 规则 6：【画廊大图放行】(修复 VerifyError：将残留的 move-result 一同消除)
     {
         "name": "闪照破解 (AIO 画廊大图放行 a.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
         "target_method": "b(Ljava/util/List;)Ljava/util/List;",
         "type": "REGEX_REPLACE",
-        "regex": r"sget-object v3, Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static \{v2, v3\}, Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z",
+        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z(?:\s+move-result\s+\w+)?",
         "smali": """
     const/4 v2, 0x0"""
     },
-    # 规则 7：画廊大图放行
+    # 规则 7：【画廊大图放行】(修复 VerifyError：将残留的 move-result 一同消除)
     {
         "name": "闪照破解 (AIO 画廊大图放行 b.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
         "target_method": "b(Ljava/util/List;)Ljava/util/List;",
         "type": "REGEX_REPLACE",
-        "regex": r"sget-object v10, Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static \{v6, v10\}, Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z",
+        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z(?:\s+move-result\s+\w+)?",
         "smali": """
     const/4 v6, 0x0"""
     },
@@ -207,10 +207,7 @@ class FastDexParser:
         return result, pos
 
     def find_setting_config_info(self):
-        """精准提取 SettingConfigProvider 子类与返回 List 的方法"""
         target_super = "Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;"
-        
-        # 预先找到匹配 (Landroid/content/Context;)Ljava/util/List; 的 proto_idx 集合
         matching_proto_indices = set()
         for p_idx in range(self.proto_ids_size):
             if self.get_proto_desc(p_idx) == "(Landroid/content/Context;)Ljava/util/List;":
@@ -236,7 +233,6 @@ class FastDexParser:
                     for _ in range((static_fields_size + instance_fields_size) * 2):
                         _, p = self.read_uleb128(p)
 
-                    # 1. 扫描 direct_methods
                     m_idx = 0
                     for _ in range(direct_methods_size):
                         diff, p = self.read_uleb128(p)
@@ -248,7 +244,6 @@ class FastDexParser:
                             m_name = self.get_string(name_idx)
                             return cls_name, f"{m_name}(Landroid/content/Context;)Ljava/util/List;"
 
-                    # 2. 扫描 virtual_methods (核心修复：Dalvik规范要求虚方法索引从0重新开始计数!)
                     m_idx = 0
                     for _ in range(virtual_methods_size):
                         diff, p = self.read_uleb128(p)
@@ -262,7 +257,6 @@ class FastDexParser:
         return None, None
 
     def find_simple_item_class(self):
-        """精准全量嗅探 SimpleItemProcessor 类 (支持源文件、类名、父类、接口与字节码引用)"""
         target_str_ids = set()
         for s_idx in range(self.string_ids_size):
             s = self.get_string(s_idx)
@@ -272,7 +266,6 @@ class FastDexParser:
         if not target_str_ids:
             return None
 
-        # 1. 检查类名、父类、接口或源文件名 (.source "SimpleItemProcessor.kt")
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
             desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
@@ -298,7 +291,6 @@ class FastDexParser:
                     if if_desc_idx in target_str_ids:
                         return self.get_string(desc_idx)[1:-1].replace('/', '.')
 
-        # 2. 检查方法内 const-string 指令引用
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
             class_data_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
@@ -323,12 +315,12 @@ class FastDexParser:
                     for k in range(insns_size):
                         if insns_start + k * 2 + 4 > len(self.data): break
                         opcode = self.data[insns_start + k * 2]
-                        if opcode == 0x1A: # const-string
+                        if opcode == 0x1A:
                             ref_str_idx = struct.unpack_from('<H', self.data, insns_start + k * 2 + 2)[0]
                             if ref_str_idx in target_str_ids:
                                 desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
                                 return self.get_string(desc_idx)[1:-1].replace('/', '.')
-                        elif opcode == 0x1B: # const-string/jumbo
+                        elif opcode == 0x1B:
                             ref_str_idx = struct.unpack_from('<I', self.data, insns_start + k * 2 + 2)[0]
                             if ref_str_idx in target_str_ids:
                                 desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]

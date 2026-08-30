@@ -175,38 +175,51 @@ public class DexPatcher {
             pattern = Pattern.compile("(\\.method[^\\n]*\\s+" + escaped + "\\b.*?\\.end method)", Pattern.DOTALL);
         }
 
-        if (!pattern.matcher(code).find()) {
+        Matcher methodMatcher = pattern.matcher(code);
+        if (!methodMatcher.find()) {
             System.err.println("[WARN] 未在类中定位到目标方法: " + rule.targetClass + "->" + rule.targetMethod);
             return code;
         }
 
+        methodMatcher.reset();
+
         if ("REPLACE".equals(rule.type)) {
-            return pattern.matcher(code).replaceAll(Matcher.quoteReplacement(rule.smali));
+            return methodMatcher.replaceAll(Matcher.quoteReplacement(rule.smali));
         } else if ("INSERT_BEFORE".equals(rule.type)) {
-            Matcher m = pattern.matcher(code);
             StringBuffer sb = new StringBuffer();
-            while (m.find()) {
-                String mBody = m.group(1);
+            while (methodMatcher.find()) {
+                String mBody = methodMatcher.group(1);
+
+                // 自动扩展 .locals 至少为 4，避免注入代码破坏方法原始寄存器
+                Matcher locMatcher = Pattern.compile("\\.locals\\s+(\\d+)").matcher(mBody);
+                if (locMatcher.find()) {
+                    int locs = Integer.parseInt(locMatcher.group(1));
+                    if (locs < 4) {
+                        mBody = locMatcher.replaceFirst(".locals 4");
+                    }
+                }
+
                 Matcher headerMatcher = Pattern.compile("(\\.registers\\s+\\d+|\\.locals\\s+\\d+)").matcher(mBody);
                 if (headerMatcher.find()) {
                     int idx = headerMatcher.end();
                     String newBody = mBody.substring(0, idx) + "\n" + rule.smali + "\n" + mBody.substring(idx);
-                    m.appendReplacement(sb, Matcher.quoteReplacement(newBody));
+                    methodMatcher.appendReplacement(sb, Matcher.quoteReplacement(newBody));
                 } else {
-                    m.appendReplacement(sb, Matcher.quoteReplacement(mBody));
+                    methodMatcher.appendReplacement(sb, Matcher.quoteReplacement(mBody));
                 }
             }
-            m.appendTail(sb);
+            methodMatcher.appendTail(sb);
             return sb.toString();
         } else if ("REGEX_REPLACE".equals(rule.type)) {
-            Matcher m = pattern.matcher(code);
             StringBuffer sb = new StringBuffer();
-            while (m.find()) {
-                String mBody = m.group(1);
-                String replacedBody = Pattern.compile(rule.regex).matcher(mBody).replaceAll(Matcher.quoteReplacement(rule.smali));
-                m.appendReplacement(sb, Matcher.quoteReplacement(replacedBody));
+            while (methodMatcher.find()) {
+                String mBody = methodMatcher.group(1);
+                // 核心修复：自动将 Python 风格反向引用 \1 / \2 转换为 Java 正则引擎能够解析的 $1 / $2
+                String javaReplacement = rule.smali.replace("\\1", "$1").replace("\\2", "$2").replace("\\3", "$3");
+                String replacedBody = Pattern.compile(rule.regex).matcher(mBody).replaceAll(javaReplacement);
+                methodMatcher.appendReplacement(sb, Matcher.quoteReplacement(replacedBody));
             }
-            m.appendTail(sb);
+            methodMatcher.appendTail(sb);
             return sb.toString();
         }
         return code;
