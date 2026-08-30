@@ -47,7 +47,6 @@ def ensure_smali_jars():
         sys.exit(1)
 
 def ensure_fixed_keystore():
-    """确保使用固定的签名密钥，首次生成后永久复用"""
     os.makedirs(TOOLS_DIR, exist_ok=True)
     if not os.path.exists(FIXED_KEYSTORE):
         log("INFO", "正在初始化固定签名证书 (仅首次生成)...")
@@ -255,7 +254,8 @@ def main():
     log("TIME", f"  -> 阶段 2 耗时: {t_phase2}s")
 
     t0 = time.time()
-    log("INFO", "3. 正在处理 Dex 分包 ({len(dex_to_rules)} 个)...")
+    # 此处已补上 f 前缀
+    log("INFO", f"3. 正在处理 Dex 分包 ({len(dex_to_rules)} 个)...")
     dex_tasks = []
     modified_dex_files = []
 
