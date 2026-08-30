@@ -1,15 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件
+Patch 规则定义文件 (纯内存毫秒级二进制解析版)
 """
 
-import zipfile
-import os
-import subprocess
-import re
-import shutil
 import struct
-import shlex
 
 RULES = [
     # 规则 1：防撤回核心拦截
@@ -70,7 +64,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/MeowHelper;->handleSendMsg(Ljava/util/ArrayList;)V
 """
     },
-    # 规则 4：【AIO 气泡总构造拦截】AIOMsgItem(MsgRecord) 构造函数插桩
+    # 规则 4：闪照破解 (AIOMsgItem 气泡构造解密)
     {
         "name": "闪照破解 (AIOMsgItem 气泡构造解密)",
         "target_class": "Lcom/tencent/mobileqq/aio/msg/AIOMsgItem;",
@@ -82,7 +76,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
 """
     },
-    # 规则 5：【消息批量转换总漏斗拦截】com.tencent.qqnt.msg.n.a(ArrayList)
+    # 规则 5：闪照破解 (批量转换解密)
     {
         "name": "闪照破解 (com.tencent.qqnt.msg.n.a 批量转换解密)",
         "target_class": "Lcom/tencent/qqnt/msg/n;",
@@ -94,7 +88,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgList(Ljava/util/List;)V
 """
     },
-    # 规则 6：【画廊大图放行】DefaultAIOLayerFetchStrategy (fetch/a.b)
+    # 规则 6：画廊大图放行
     {
         "name": "闪照破解 (AIO 画廊大图放行 a.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
@@ -104,7 +98,7 @@ RULES = [
         "smali": """
     const/4 v2, 0x0"""
     },
-    # 规则 7：【画廊大图放行】GroupAlbumUploadAIOLayerFetchStrategy (fetch/b.b)
+    # 规则 7：画廊大图放行
     {
         "name": "闪照破解 (AIO 画廊大图放行 b.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
@@ -164,103 +158,125 @@ RULES = [
     }
 ]
 
-def find_main_setting_config_class(dex_bytes):
-    if len(dex_bytes) < 0x70 or dex_bytes[:4] != b'dex\n':
-        return None
-    if b'Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;' not in dex_bytes:
-        return None
+class FastDexParser:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.valid = len(data) >= 0x70 and data[:4] == b'dex\n'
+        if not self.valid: return
+        self.string_ids_off = struct.unpack_from('<I', data, 0x3C)[0]
+        self.type_ids_size, self.type_ids_off = struct.unpack_from('<II', data, 0x40)
+        self.proto_ids_size, self.proto_ids_off = struct.unpack_from('<II', data, 0x48)
+        self.method_ids_size, self.method_ids_off = struct.unpack_from('<II', data, 0x58)
+        self.class_defs_size, self.class_defs_off = struct.unpack_from('<II', data, 0x60)
 
-    try:
-        string_ids_off = struct.unpack_from('<I', dex_bytes, 0x3C)[0]
-        type_ids_size, type_ids_off = struct.unpack_from('<II', dex_bytes, 0x40)
-        class_defs_size, class_defs_off = struct.unpack_from('<II', dex_bytes, 0x60)
+    def get_string(self, str_idx: int) -> str:
+        str_off = struct.unpack_from('<I', self.data, self.string_ids_off + str_idx * 4)[0]
+        p = str_off
+        while self.data[p] & 0x80: p += 1
+        p += 1
+        end = self.data.find(b'\x00', p)
+        return self.data[p:end].decode('utf-8', errors='ignore') if end != -1 else ""
 
-        def get_type_str(type_idx):
-            if type_idx >= type_ids_size: return ""
-            desc_idx = struct.unpack_from('<I', dex_bytes, type_ids_off + type_idx * 4)[0]
-            str_off = struct.unpack_from('<I', dex_bytes, string_ids_off + desc_idx * 4)[0]
-            p = str_off
-            while dex_bytes[p] & 0x80:
-                p += 1
-            p += 1
-            end = dex_bytes.find(b'\x00', p)
-            return dex_bytes[p:end].decode('utf-8', errors='ignore')
+    def get_type_str(self, type_idx: int) -> str:
+        if type_idx >= self.type_ids_size: return ""
+        desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + type_idx * 4)[0]
+        return self.get_string(desc_idx)
 
+    def get_method_name_and_proto(self, method_idx: int):
+        if method_idx >= self.method_ids_size: return "", 0
+        _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + method_idx * 8)
+        return self.get_string(name_idx), proto_idx
+
+    def get_proto_desc(self, proto_idx: int) -> str:
+        if proto_idx >= self.proto_ids_size: return ""
+        _, return_type_idx, parameters_off = struct.unpack_from('<III', self.data, self.proto_ids_off + proto_idx * 12)
+        ret_type = self.get_type_str(return_type_idx)
+        param_types = []
+        if parameters_off != 0:
+            size = struct.unpack_from('<I', self.data, parameters_off)[0]
+            for i in range(size):
+                t_idx = struct.unpack_from('<H', self.data, parameters_off + 4 + i * 2)[0]
+                param_types.append(self.get_type_str(t_idx))
+        return f"({''.join(param_types)}){ret_type}"
+
+    def read_uleb128(self, pos):
+        result, shift = 0, 0
+        while True:
+            b = self.data[pos]
+            pos += 1
+            result |= (b & 0x7f) << shift
+            if (b & 0x80) == 0: break
+            shift += 7
+        return result, pos
+
+    def find_setting_config_info(self):
         target_super = "Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;"
-        for i in range(class_defs_size):
-            super_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32 + 8)[0]
-            if super_idx < type_ids_size and get_type_str(super_idx) == target_super:
-                class_idx = struct.unpack_from('<I', dex_bytes, class_defs_off + i * 32)[0]
-                cls_name = get_type_str(class_idx)
+        for i in range(self.class_defs_size):
+            super_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 8)[0]
+            if super_idx < self.type_ids_size and self.get_type_str(super_idx) == target_super:
+                class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
+                cls_name = self.get_type_str(class_idx)
                 if cls_name.startswith("Lcom/tencent/mobileqq/setting/main/"):
-                    return cls_name
-    except Exception:
-        pass
-    return None
+                    class_data_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
+                    if class_data_off == 0: continue
+                    p = class_data_off
+                    static_fields_size, p = self.read_uleb128(p)
+                    instance_fields_size, p = self.read_uleb128(p)
+                    direct_methods_size, p = self.read_uleb128(p)
+                    virtual_methods_size, p = self.read_uleb128(p)
 
-def get_dynamic_setting_rule(apk_path, baksmali_bin, work_dir):
-    config_dex = None
-    config_class = None
-    item_dex = None
+                    for _ in range(static_fields_size + instance_fields_size):
+                        _, p = self.read_uleb128(p)
+                        _, p = self.read_uleb128(p)
 
-    with zipfile.ZipFile(apk_path, 'r') as zf:
-        dex_files = [f for f in zf.namelist() if re.match(r'^classes\d*\.dex$', f)]
-        for dex in dex_files:
-            data = zf.read(dex)
-            
-            if not config_class:
-                found_cls = find_main_setting_config_class(data)
-                if found_cls:
-                    config_class = found_cls
-                    config_dex = dex
-            
-            if not item_dex and b'SimpleItemProcessor' in data:
-                item_dex = dex
+                    method_idx = 0
+                    for _ in range(direct_methods_size + virtual_methods_size):
+                        diff, p = self.read_uleb128(p)
+                        method_idx += diff
+                        _, p = self.read_uleb128(p)
+                        _, p = self.read_uleb128(p)
 
-    if not config_class or not config_dex or not item_dex:
+                        m_name, proto_idx = self.get_method_name_and_proto(method_idx)
+                        proto_desc = self.get_proto_desc(proto_idx)
+                        if proto_desc == "(Landroid/content/Context;)Ljava/util/List;":
+                            return cls_name, f"{m_name}(Landroid/content/Context;)Ljava/util/List;"
+        return None, None
+
+    def find_simple_item_class(self):
+        target_needle = "SimpleItemProcessor"
+        for i in range(self.class_defs_size):
+            class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
+            cls_name = self.get_type_str(class_idx)
+            if target_needle in cls_name:
+                return cls_name[1:-1].replace('/', '.')
+            super_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 8)[0]
+            if super_idx < self.type_ids_size and target_needle in self.get_type_str(super_idx):
+                return cls_name[1:-1].replace('/', '.')
+            interfaces_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 12)[0]
+            if interfaces_off != 0:
+                if_size = struct.unpack_from('<I', self.data, interfaces_off)[0]
+                for j in range(if_size):
+                    if_type_idx = struct.unpack_from('<H', self.data, interfaces_off + 4 + j * 2)[0]
+                    if target_needle in self.get_type_str(if_type_idx):
+                        return cls_name[1:-1].replace('/', '.')
         return None
 
-    scan_dir = os.path.join(work_dir, "dynamic_setting_scan")
-    os.makedirs(scan_dir, exist_ok=True)
+def get_dynamic_setting_rule_fast(dex_data_dict):
+    config_class, target_method, item_class = None, None, None
+    for _, dex_bytes in dex_data_dict.items():
+        if not (config_class and target_method) and b'SettingConfigProvider' in dex_bytes:
+            parser = FastDexParser(dex_bytes)
+            if parser.valid:
+                cls, method = parser.find_setting_config_info()
+                if cls and method: config_class, target_method = cls, method
 
-    target_dexes = set([config_dex, item_dex])
-    with zipfile.ZipFile(apk_path, 'r') as zf:
-        for dex in target_dexes:
-            dex_out_path = os.path.join(scan_dir, dex)
-            with open(dex_out_path, "wb") as f:
-                f.write(zf.read(dex))
-            smali_out = os.path.join(scan_dir, f"smali_{dex}")
-            subprocess.run(
-                f"{baksmali_bin} d {shlex.quote(dex_out_path)} -o {shlex.quote(smali_out)}",
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
+        if not item_class and b'SimpleItemProcessor' in dex_bytes:
+            parser = FastDexParser(dex_bytes)
+            if parser.valid:
+                item = parser.find_simple_item_class()
+                if item: item_class = item
 
-    target_method = None
-    item_class = None
-
-    for root, _, files in os.walk(scan_dir):
-        for f in files:
-            if not f.endswith('.smali'):
-                continue
-            path = os.path.join(root, f)
-            with open(path, 'r', encoding='utf-8') as file_obj:
-                content = file_obj.read()
-
-                if 'SimpleItemProcessor' in content and not item_class:
-                    m = re.search(r'\.class.+?(L[\w/]+;)', content)
-                    if m:
-                        item_class = m.group(1).replace('/', '.')[1:-1]
-
-                cls_descriptor = config_class[1:-1] + ".smali"
-                if path.endswith(cls_descriptor) and not target_method:
-                    m_method = re.search(r'\.method.+?(\w+)\(Landroid/content/Context;\)Ljava/util/List;', content)
-                    if m_method:
-                        target_method = f"{m_method.group(1)}(Landroid/content/Context;)Ljava/util/List;"
-
-    shutil.rmtree(scan_dir, ignore_errors=True)
+        if config_class and target_method and item_class: break
 
     if config_class and target_method and item_class:
         smali_hook = f"""
@@ -269,7 +285,6 @@ def get_dynamic_setting_rule(apk_path, baksmali_bin, work_dir):
     const-string v2, "{item_class}"
     invoke-static {{v1, v0, v2}}, Lcom/tencent/qqnt/patch/SettingInjector;->inject(Landroid/content/Context;Ljava/util/List;Ljava/lang/String;)V
     return-object v0"""
-
         return {
             "name": f"设置中心动态注入 ({config_class})",
             "target_class": config_class,
@@ -278,5 +293,4 @@ def get_dynamic_setting_rule(apk_path, baksmali_bin, work_dir):
             "regex": r"return-object\s+([vp]\d+)(?=\s*(?:\.end\s+method|$))",
             "smali": smali_hook
         }
-
     return None
