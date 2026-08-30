@@ -58,7 +58,7 @@ RULES = [
     :cond_orig_general
 """
     },
-    # 规则 3：喵喵助手 (发送消息拦截与文字替换)
+    # 规则 3：喵喵助手 (sendMsg)
     {
         "name": "喵喵助手 (sendMsg)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
@@ -68,6 +68,98 @@ RULES = [
     # === [Meow Helper Hook] ===
     move-object/16 v0, p4
     invoke-static {v0}, Lcom/tencent/qqnt/patch/MeowHelper;->handleSendMsg(Ljava/util/ArrayList;)V
+"""
+    },
+    # 规则 4：【AIO 气泡总构造拦截】AIOMsgItem(MsgRecord) 构造函数插桩
+    {
+        "name": "闪照破解 (AIOMsgItem 气泡构造解密)",
+        "target_class": "Lcom/tencent/mobileqq/aio/msg/AIOMsgItem;",
+        "target_method": "<init>(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    # === [FlashPic AIOMsgItem Hook] ===
+    move-object/16 v0, p1
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
+"""
+    },
+    # 规则 5：【消息批量转换总漏斗拦截】com.tencent.qqnt.msg.n.a(ArrayList)
+    {
+        "name": "闪照破解 (com.tencent.qqnt.msg.n.a 批量转换解密)",
+        "target_class": "Lcom/tencent/qqnt/msg/n;",
+        "target_method": "a(Ljava/util/ArrayList;)Ljava/util/ArrayList;",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    # === [FlashPic Batch Transform Hook] ===
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgList(Ljava/util/List;)V
+"""
+    },
+    # 规则 6：【画廊大图放行】DefaultAIOLayerFetchStrategy (fetch/a.b)
+    {
+        "name": "闪照破解 (AIO 画廊大图放行 a.b)",
+        "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
+        "target_method": "b(Ljava/util/List;)Ljava/util/List;",
+        "type": "REGEX_REPLACE",
+        "regex": r"sget-object v3, Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static \{v2, v3\}, Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z",
+        "smali": """
+    const/4 v2, 0x0"""
+    },
+    # 规则 7：【画廊大图放行】GroupAlbumUploadAIOLayerFetchStrategy (fetch/b.b)
+    {
+        "name": "闪照破解 (AIO 画廊大图放行 b.b)",
+        "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
+        "target_method": "b(Ljava/util/List;)Ljava/util/List;",
+        "type": "REGEX_REPLACE",
+        "regex": r"sget-object v10, Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static \{v6, v10\}, Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z",
+        "smali": """
+    const/4 v6, 0x0"""
+    },
+    # 规则 8：PicElement 所有构造函数脱壳
+    {
+        "name": "闪照破解 (PicElement 所有构造函数脱壳)",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/PicElement;",
+        "target_method": "<init>",
+        "type": "REGEX_REPLACE",
+        "regex": r"return-void(?=\s*(?:\.end\s+method|$))",
+        "smali": """
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handlePicElement(Lcom/tencent/qqnt/kernel/nativeinterface/PicElement;)V
+    return-void"""
+    },
+    # 规则 9：MsgRecord 所有构造函数脱壳
+    {
+        "name": "闪照破解 (MsgRecord 所有构造函数脱壳)",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;",
+        "target_method": "<init>",
+        "type": "REGEX_REPLACE",
+        "regex": r"return-void(?=\s*(?:\.end\s+method|$))",
+        "smali": """
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
+    return-void"""
+    },
+    # 规则 10：UI 视图模型 AIOElementType$f 构造函数脱壳
+    {
+        "name": "闪照破解 (AIOElementType.PicElement 构造函数脱壳)",
+        "target_class": "Lcom/tencent/qqnt/aio/msg/element/AIOElementType$f;",
+        "target_method": "<init>",
+        "type": "REGEX_REPLACE",
+        "regex": r"return-void(?=\s*(?:\.end\s+method|$))",
+        "smali": """
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleAIOElementPic(Ljava/lang/Object;)V
+    return-void"""
+    },
+    # 规则 11：实时推送监听总线代理
+    {
+        "name": "闪照破解 (addKernelMsgListener 实时推送代理)",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
+        "target_method": "addKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)J",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    # === [FlashPic Live Push Hook] ===
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/FlashPicHelper;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
+    move-result-object p1
 """
     }
 ]

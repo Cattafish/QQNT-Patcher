@@ -161,8 +161,15 @@ def apply_patch_to_smali(smali_path, rule):
     patch_type = rule["type"]
     patch_smali = rule["smali"].strip()
 
-    escaped_method = re.escape(method_name)
-    pattern = re.compile(rf'(\.method[^\n]*\s+{escaped_method}.*?\.end method)', re.DOTALL)
+    # 支持精确方法名或者多构造函数全量匹配
+    if "(" in method_name:
+        escaped_method = re.escape(method_name)
+        pattern = re.compile(rf'(\.method[^\n]*\s+{escaped_method}\s*?\n.*?\.end method)', re.DOTALL)
+    elif method_name == "<init>":
+        pattern = re.compile(r'(\.method[^\n]*\s+<init>\([^\n]*\)\w*?\s*?\n.*?\.end method)', re.DOTALL)
+    else:
+        escaped_method = re.escape(method_name)
+        pattern = re.compile(rf'(\.method[^\n]*\s+{escaped_method}\b.*?\.end method)', re.DOTALL)
 
     if not pattern.search(code):
         log("ERR", f"在 {os.path.basename(smali_path)} 中未找到目标方法: {method_name}")

@@ -85,7 +85,21 @@ public class ZzzSettingFragment {
                     }
             ));
 
-            // 开关 2: 喵喵助手 (自动替换文字并在句末加喵)
+            // 开关 2: 闪照破解 (直接将闪照作为普通图片展示与保存)
+            File flashPicFlag = new File(activity.getFilesDir(), "zzz_flash_pic_off");
+            boolean isFlashPicOn = !flashPicFlag.exists();
+            funcItems.add(createNativeSwitchItem(
+                    cl, "闪照破解", isFlashPicOn,
+                    (btn, checked) -> {
+                        try {
+                            if (checked) flashPicFlag.delete();
+                            else flashPicFlag.createNewFile();
+                        } catch (Throwable ignored) {}
+                        Toast.makeText(activity, "闪照破解" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
+                    }
+            ));
+
+            // 开关 3: 喵喵助手
             File meowFlag = new File(activity.getFilesDir(), "zzz_meow_helper_on");
             boolean isMeowOn = meowFlag.exists();
             funcItems.add(createNativeSwitchItem(
