@@ -9,6 +9,8 @@ import android.view.View;
 import android.widget.CompoundButton;
 import android.widget.Toast;
 
+import com.tencent.qqnt.patch.plugin.PluginManager;
+
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -16,6 +18,7 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 public class ZzzSettingFragment {
 
@@ -46,13 +49,11 @@ public class ZzzSettingFragment {
 
             ClassLoader cl = activity.getClassLoader();
 
-            // 1. 设置 QQ 原厂顶栏标题
             try {
                 Method setTitleMethod = fragment.getClass().getMethod("setTitle", CharSequence.class);
                 setTitleMethod.invoke(fragment, "Zzz 设置");
             } catch (Throwable ignored) {}
 
-            // 2. 动态获取 QUIListItemAdapter
             Object adapter = null;
             for (Method m : fragment.getClass().getMethods()) {
                 if (m.getParameterTypes().length == 0 &&
@@ -63,13 +64,10 @@ public class ZzzSettingFragment {
             }
             if (adapter == null) return false;
 
-            // 3. 构建卡片列表
             List<Object> groups = new ArrayList<>();
 
-            // --- 卡片 1: 功能 (Switch 开关列表) ---
+            // 1. 核心功能
             List<Object> funcItems = new ArrayList<>();
-
-            // 开关 1: 消息防撤回
             funcItems.add(createNativeSwitchItem(
                     cl, "消息防撤回", ConfigManager.isAntiRevokeEnabled(),
                     (btn, checked) -> {
@@ -77,8 +75,6 @@ public class ZzzSettingFragment {
                         Toast.makeText(activity, "消息防撤回" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
             ));
-
-            // 开关 2: 闪照破解
             funcItems.add(createNativeSwitchItem(
                     cl, "闪照破解", ConfigManager.isFlashPicDecryptEnabled(),
                     (btn, checked) -> {
@@ -86,8 +82,6 @@ public class ZzzSettingFragment {
                         Toast.makeText(activity, "闪照破解" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
             ));
-
-            // 开关 3: 喵喵助手
             funcItems.add(createNativeSwitchItem(
                     cl, "喵喵助手", ConfigManager.isMeowEnabled(),
                     (btn, checked) -> {
@@ -95,9 +89,50 @@ public class ZzzSettingFragment {
                         Toast.makeText(activity, "喵喵助手" + (checked ? " 已开启喵~" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
             ));
-            groups.add(createNativeGroup(cl, "功能", funcItems));
+            funcItems.add(createNativeSwitchItem(cl, "脚本悬浮球快捷入口", ConfigManager.isFloatingBallEnabled(), (btn, checked) -> { ConfigManager.setFloatingBallEnabled(checked); com.tencent.qqnt.patch.plugin.FloatingBallManager.refreshVisibility(); Toast.makeText(activity, "悬浮球" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show(); })); groups.add(createNativeGroup(cl, "核心功能", funcItems));
 
-            // --- 卡片 2: 高级 ---
+            // 2. 动态脚本控制台
+            List<Object> pluginItems = new ArrayList<>();
+            List<PluginManager.PluginItem> allPlugins = PluginManager.scanAllPlugins(activity);
+
+            pluginItems.add(createNativeClickableItem(cl, "重新扫描与重载全部脚本", "刷新", v -> {
+                PluginManager.reloadAll(activity);
+                Toast.makeText(activity, "已提交重新扫描指令", Toast.LENGTH_SHORT).show();
+            }));
+
+            if (allPlugins.isEmpty()) {
+                pluginItems.add(createNativeTextItem(cl, "暂无外部脚本", "放入zzz/plugins"));
+            } else {
+                for (PluginManager.PluginItem item : allPlugins) {
+                    final String pId = item.id;
+                    final String pName = item.name;
+
+                    pluginItems.add(createNativeSwitchItem(
+                            cl, pName + " (" + pId + ")", item.isEnabled,
+                            (btn, checked) -> {
+                                PluginManager.setPluginActive(activity, pId, checked);
+                                Toast.makeText(activity, pName + (checked ? " 已启动" : " 已停止"), Toast.LENGTH_SHORT).show();
+                            }
+                    ));
+
+                    // ★ 核心特性：如果脚本注册了 addItem，直接在此处挂载动作按钮！
+                    if (item.isEnabled && item.menuItems != null && !item.menuItems.isEmpty()) {
+                        for (Map.Entry<String, String> entry : item.menuItems.entrySet()) {
+                            final String actionName = entry.getKey();
+                            final String actionCallback = entry.getValue();
+                            pluginItems.add(createNativeClickableItem(
+                                    cl, "  ↳ " + actionName, "打开界面",
+                                    v -> {
+                                        PluginManager.invokePluginMenu(pId, actionCallback, 2, "", actionName);
+                                    }
+                            ));
+                        }
+                    }
+                }
+            }
+            groups.add(createNativeGroup(cl, "动态脚本 (" + allPlugins.size() + " 个插件)", pluginItems));
+
+            // 3. 高级
             Object itemDebug = createNativeSwitchItem(
                     cl, "调试日志输出", ConfigManager.isDebugLogEnabled(),
                     (btn, checked) -> {
@@ -107,15 +142,12 @@ public class ZzzSettingFragment {
             );
             groups.add(createNativeGroup(cl, "高级", Collections.singletonList(itemDebug)));
 
-            // --- 卡片 3: 关于 ---
+            // 4. 关于
             List<Object> aboutItems = new ArrayList<>();
             aboutItems.add(createNativeTextItem(cl, "当前版本", ConfigManager.VERSION));
-
-            // ★【检查更新项】：通过 a.w(g) 挂载 [QQ 原厂 QUIBadge 红点 + 获取最新版]
             aboutItems.add(createNativeUpdateItem(cl, "检查更新", ConfigManager.hasNewVersion(), v -> {
                 UpdateHelper.checkUpdate(activity);
             }));
-
             aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", v -> {
                 try {
                     Intent tgIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.TG_CHANNEL_URL));
@@ -136,37 +168,26 @@ public class ZzzSettingFragment {
             }));
             groups.add(createNativeGroup(cl, "关于", aboutItems));
 
-            // 4. 提交卡片数组给 Adapter
             Class<?> groupClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.Group");
             Object groupArray = Array.newInstance(groupClass, groups.size());
             for (int i = 0; i < groups.size(); i++) {
                 Array.set(groupArray, i, groups.get(i));
             }
 
-            Method setConfigsMethod = null;
             for (Method m : adapter.getClass().getMethods()) {
                 Class<?>[] pts = m.getParameterTypes();
                 if (pts.length == 1 && pts[0].isArray() &&
                     pts[0].getComponentType().getName().endsWith("Group")) {
-                    setConfigsMethod = m;
-                    break;
+                    m.invoke(adapter, new Object[]{groupArray});
+                    return true;
                 }
             }
-
-            if (setConfigsMethod != null) {
-                setConfigsMethod.invoke(adapter, new Object[]{groupArray});
-                return true;
-            }
-
             return false;
         } catch (Throwable t) {
             return false;
         }
     }
 
-    /**
-     * 核心：通过 a.w(g) 注入 [QQ 官方 QUIBadge 红点 + 获取最新版]
-     */
     private static Object createNativeUpdateItem(ClassLoader cl, String title, boolean hasNewVersion, View.OnClickListener listener) throws Exception {
         Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
         Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
@@ -182,7 +203,6 @@ public class ZzzSettingFragment {
         );
         Object item = xConst.newInstance(leftObj, rightObj);
 
-        // 1. 绑定点击事件
         if (listener != null) {
             for (Method m : item.getClass().getMethods()) {
                 Class<?>[] pts = m.getParameterTypes();
@@ -193,7 +213,6 @@ public class ZzzSettingFragment {
             }
         }
 
-        // 2. 绑定 a.w(g) 拦截 View 渲染，注入 QQ 原生 QUIBadge 红点
         try {
             Class<?> gClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.g");
             Object gProxy = Proxy.newProxyInstance(cl, new Class<?>[]{gClass}, (proxy, method, args) -> {

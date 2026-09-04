@@ -13,6 +13,7 @@ public class ViewGroup extends View {
     public void addView(View child, int index) {}
     public void addView(View child, LayoutParams params) {}
     public void addView(View child, int index, LayoutParams params) {}
+    public void removeView(View view) {}
 
     public static class LayoutParams {
         public static final int MATCH_PARENT = -1;
@@ -31,14 +32,8 @@ public class ViewGroup extends View {
         public int rightMargin;
         public int bottomMargin;
 
-        public MarginLayoutParams(int width, int height) {
-            super(width, height);
-        }
-
-        public MarginLayoutParams(LayoutParams source) {
-            super(source.width, source.height);
-        }
-
+        public MarginLayoutParams(int width, int height) { super(width, height); }
+        public MarginLayoutParams(LayoutParams source) { super(source.width, source.height); }
         public void setMargins(int left, int top, int right, int bottom) {}
     }
 }

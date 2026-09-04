@@ -24,19 +24,26 @@ public class MeowHelper {
     @SuppressWarnings("rawtypes")
     public static void handleSendMsg(ArrayList elements) {
         if (elements == null || elements.isEmpty()) return;
-        if (!ConfigManager.isMeowEnabled()) return;
 
+        // ★ 先走动态脚本引擎的 getMsg 预处理
         try {
-            for (Object obj : elements) {
-                if (obj instanceof MsgElement) {
-                    MsgElement msgElem = (MsgElement) obj;
-                    TextElement textElem = msgElem.textElement;
-                    if (textElem != null && textElem.content != null && !textElem.content.trim().isEmpty()) {
-                        textElem.content = transformToMeow(textElem.content);
+            com.tencent.qqnt.patch.plugin.PluginManager.dispatchSendMsg(elements);
+        } catch (Throwable ignored) {}
+
+        // 若开启了喵喵助手，再执行喵化处理
+        if (ConfigManager.isMeowEnabled()) {
+            try {
+                for (Object obj : elements) {
+                    if (obj instanceof MsgElement) {
+                        MsgElement msgElem = (MsgElement) obj;
+                        TextElement textElem = msgElem.textElement;
+                        if (textElem != null && textElem.content != null && !textElem.content.trim().isEmpty()) {
+                            textElem.content = transformToMeow(textElem.content);
+                        }
                     }
                 }
-            }
-        } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {}
+        }
     }
 
     public static String transformToMeow(String original) {

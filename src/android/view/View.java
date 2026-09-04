@@ -34,8 +34,9 @@ public class View {
     public boolean post(Runnable action) { return false; }
     protected void onDraw(Canvas canvas) {}
 
-    public interface OnClickListener {
-        void onClick(View v);
-    }
+    public interface OnClickListener { void onClick(View v); }
     public void setOnClickListener(OnClickListener l) {}
+
+    public interface OnTouchListener { boolean onTouch(View v, MotionEvent event); }
+    public void setOnTouchListener(OnTouchListener l) {}
 }

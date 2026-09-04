@@ -1,8 +1,10 @@
 package android.app;
+
 import android.content.Context;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+
 public class Dialog {
     public Dialog(Context context) {}
     public Dialog(Context context, int themeResId) {}
@@ -11,4 +13,5 @@ public class Dialog {
     public void setContentView(View view) {}
     public void setContentView(View view, ViewGroup.LayoutParams params) {}
     public Window getWindow() { return null; }
+    public boolean requestWindowFeature(int featureId) { return false; }
 }

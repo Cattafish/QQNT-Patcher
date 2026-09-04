@@ -5,4 +5,7 @@ public class PicElement {
     public Integer picType;
     public Boolean isFlashPic;
     public String summary;
+    public String originImageUrl;
+    public String sourcePath;
+    public String md5HexStr;
 }

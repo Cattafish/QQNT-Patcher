@@ -24,7 +24,6 @@ public class FlashPicHelper {
         if (!ConfigManager.isFlashPicDecryptEnabled()) return;
         try {
             Class<?> clz = en.getClass();
-
             try {
                 Method f0 = clz.getMethod("f0", int.class);
                 f0.invoke(en, 0);
@@ -33,7 +32,6 @@ public class FlashPicHelper {
                 fa.setAccessible(true);
                 fa.setInt(en, 0);
             }
-
             try {
                 Method tMethod = clz.getMethod("T", Boolean.class);
                 tMethod.invoke(en, Boolean.FALSE);
@@ -42,7 +40,6 @@ public class FlashPicHelper {
                 fC.setAccessible(true);
                 fC.set(en, Boolean.FALSE);
             }
-
             try {
                 Method l0 = clz.getMethod("l0", String.class);
                 l0.invoke(en, "[图片]");
@@ -51,40 +48,7 @@ public class FlashPicHelper {
                 ft.setAccessible(true);
                 ft.set(en, "[图片]");
             }
-
-            if (ConfigManager.isDebugLogEnabled()) {
-                Log.d(TAG, "[FLASH_PIC_SUCCESS] Native Bridge Model (en) 解密脱壳完成");
-            }
-        } catch (Throwable t) {
-            Log.e(TAG, "[FLASH_PIC_ERROR] handleNativeBridgeEn 异常", t);
-        }
-    }
-
-    public static Boolean fixIsFlashPic(Boolean original) {
-        if (!ConfigManager.isFlashPicDecryptEnabled()) {
-            return original;
-        }
-        return Boolean.FALSE;
-    }
-
-    public static int fixPicSubType(int subType) {
-        if (!ConfigManager.isFlashPicDecryptEnabled()) {
-            return subType;
-        }
-        if (subType == 8194 || (subType & 8192) != 0) {
-            return 0;
-        }
-        return subType;
-    }
-
-    public static String fixSummary(String original) {
-        if (!ConfigManager.isFlashPicDecryptEnabled()) {
-            return original;
-        }
-        if (original != null && original.contains("闪照")) {
-            return "[图片]";
-        }
-        return original;
+        } catch (Throwable ignored) {}
     }
 
     public static void handleAIOElementPic(Object obj) {
@@ -124,7 +88,6 @@ public class FlashPicHelper {
     public static void handlePicElement(PicElement pic) {
         if (pic == null) return;
         if (!ConfigManager.isFlashPicDecryptEnabled()) return;
-
         try {
             if (Boolean.TRUE.equals(pic.isFlashPic) || pic.picSubType == 8194 || (pic.picSubType & 8192) != 0) {
                 pic.isFlashPic = Boolean.FALSE;
@@ -138,6 +101,12 @@ public class FlashPicHelper {
     public static void handleMsgRecord(MsgRecord record) {
         if (record == null) return;
         decryptSingleRecord(record);
+        try {
+            if (record.chatType != 0) {
+                String uin = record.peerUin > 0 ? String.valueOf(record.peerUin) : record.peerUid;
+                com.tencent.qqnt.patch.plugin.FloatingBallManager.updateActiveAIO(record.chatType, uin);
+            }
+        } catch (Throwable ignored) {}
     }
 
     public static IKernelMsgListener wrapKernelMsgListener(IKernelMsgListener original) {
@@ -149,12 +118,15 @@ public class FlashPicHelper {
                     new Class<?>[]{IKernelMsgListener.class},
                     (proxy, method, args) -> {
                         try {
-                            if (args != null && args.length > 0) {
-                                if (args[0] instanceof List) {
-                                    handleMsgList((List<?>) args[0]);
-                                } else if (args[0] instanceof MsgRecord) {
-                                    decryptSingleRecord((MsgRecord) args[0]);
-                                }
+                            String mName = method.getName();
+                            if ("onRecvMsg".equals(mName) && args != null && args.length > 0 && (args[0] instanceof List)) {
+                                List<?> list = (List<?>) args[0];
+                                handleMsgList(list);
+                                com.tencent.qqnt.patch.plugin.PluginManager.dispatchRecvMsg(list);
+                            } else if (args != null && args.length > 0 && (args[0] instanceof List)) {
+                                handleMsgList((List<?>) args[0]);
+                            } else if (args != null && args.length > 0 && (args[0] instanceof MsgRecord)) {
+                                decryptSingleRecord((MsgRecord) args[0]);
                             }
                         } catch (Throwable ignored) {}
                         return method.invoke(original, args);
@@ -208,13 +180,7 @@ public class FlashPicHelper {
                     }
                 }
             }
-
-            if (isFlash && ConfigManager.isDebugLogEnabled()) {
-                Log.d(TAG, "[FLASH_PIC_SUCCESS] 消息体闪照解密成功 msgId=" + record.msgId);
-            }
-        } catch (Throwable t) {
-            Log.e(TAG, "[FLASH_PIC_ERROR] 解密异常", t);
-        }
+        } catch (Throwable ignored) {}
     }
 
     private static void cleanEmojiPropertiesReflectively(PicElement pic) {

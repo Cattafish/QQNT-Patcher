@@ -17,6 +17,9 @@ BAKSMALI_JAR = os.path.join(TOOLS_DIR, "baksmali.jar")
 SMALI_JAR = os.path.join(TOOLS_DIR, "smali.jar")
 DEXLIB2_JAR = os.path.join(TOOLS_DIR, "dexlib2.jar")
 GUAVA_JAR = os.path.join(TOOLS_DIR, "guava.jar")
+BSH_JAR = os.path.join(TOOLS_DIR, "bsh.jar")
+DX_JAR = os.path.join(TOOLS_DIR, "dx.jar")
+PROTOBUF_JAR = os.path.join(TOOLS_DIR, "protobuf.jar")
 FIXED_KEYSTORE = os.path.join(TOOLS_DIR, "debug.keystore")
 
 JAVA_OPTS = "-Xms256m -Xmx768m -XX:+UseParallelGC"
@@ -43,9 +46,9 @@ def run_cmd(cmd, cwd=None):
     return ret.stdout.decode('utf-8', errors='ignore')
 
 def ensure_smali_jars():
-    required = [BAKSMALI_JAR, SMALI_JAR, DEXLIB2_JAR, GUAVA_JAR]
-    if not all(os.path.exists(f) and os.path.getsize(f) > 100000 for f in required):
-        log("WARN", "未检测到完整的 tools 依赖！")
+    required = [BAKSMALI_JAR, SMALI_JAR, DEXLIB2_JAR, GUAVA_JAR, BSH_JAR, DX_JAR, PROTOBUF_JAR]
+    if not all(os.path.exists(f) and os.path.getsize(f) > 50000 for f in required):
+        log("WARN", "未检测到完整的 tools 依赖 (请检查 baksmali/smali/dexlib2/guava/bsh/dx/protobuf.jar)！")
 
 def ensure_fixed_keystore():
     os.makedirs(TOOLS_DIR, exist_ok=True)
@@ -76,14 +79,39 @@ def compile_helper_dex_incremental(work_dir):
     quoted_java = [shlex.quote(f) for f in java_files]
     run_cmd(f"javac -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
 
-    patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(os.path.join(bin_dir, "com/tencent/qqnt/patch")) for f in fs if f.endswith(".class")]
+    patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(bin_dir) for f in fs if f.endswith(".class") and ("com/tencent/qqnt/patch" in r or "me/yxp" in r)]
     if not patch_classes:
-        patch_classes = [bin_dir]
+        log("ERR", "编译 helper java 失败！")
+        return None
 
     quoted_classes = [shlex.quote(f) for f in patch_classes]
-    run_cmd(f"d8 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes))
+    run_cmd(f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes))
 
     return target_dex if os.path.exists(target_dex) else None
+
+def compile_bsh_to_asset_dex(work_dir):
+    """将 bsh.jar + dx.jar + protobuf.jar 合并转译为支持完整的独立 assets/bsh.dex"""
+    bsh_dex_dir = os.path.join(work_dir, "bsh_dex")
+    target_bsh_dex = os.path.join(bsh_dex_dir, "classes.dex")
+    final_bsh_dex = os.path.join(work_dir, "bsh.dex")
+
+    dep_mtime = max(
+        os.path.getmtime(BSH_JAR),
+        os.path.getmtime(DX_JAR) if os.path.exists(DX_JAR) else 0,
+        os.path.getmtime(PROTOBUF_JAR) if os.path.exists(PROTOBUF_JAR) else 0
+    )
+    if os.path.exists(final_bsh_dex) and os.path.getmtime(final_bsh_dex) >= dep_mtime:
+        return final_bsh_dex
+
+    os.makedirs(bsh_dex_dir, exist_ok=True)
+    # ★ 注入三合一完整运行时：动态脚本 + 运行时编译器 + 完整 Protobuf 支持
+    d8_inputs = f"{shlex.quote(BSH_JAR)} {shlex.quote(DX_JAR)} {shlex.quote(PROTOBUF_JAR)}"
+    run_cmd(f"d8 --min-api 26 --output {shlex.quote(bsh_dex_dir)} {d8_inputs}")
+
+    if os.path.exists(target_bsh_dex):
+        shutil.copyfile(target_bsh_dex, final_bsh_dex)
+        return final_bsh_dex
+    return None
 
 def build_dex_patcher_engine_incremental(work_dir):
     ensure_smali_jars()
@@ -171,6 +199,10 @@ def main():
     log("INFO", "1. 正在准备构建环境与扩展 Dex...")
     engine_bin = build_dex_patcher_engine_incremental(work_dir)
     helper_dex_path = compile_helper_dex_incremental(work_dir)
+    bsh_standalone_dex = compile_bsh_to_asset_dex(work_dir)
+    if not helper_dex_path:
+        log("ERR", "扩展 Dex 编译失败！")
+        sys.exit(1)
     if not no_sign:
         ensure_fixed_keystore()
     t_phase1 = round(time.time() - t0, 2)
@@ -273,6 +305,12 @@ def main():
         shutil.copyfile(helper_dex_path, target_helper)
         zip_args.append(shlex.quote(next_dex_name))
 
+    if bsh_standalone_dex and os.path.exists(bsh_standalone_dex):
+        target_assets_dir = os.path.join(inject_dir, "assets")
+        os.makedirs(target_assets_dir, exist_ok=True)
+        shutil.copyfile(bsh_standalone_dex, os.path.join(target_assets_dir, "bsh.dex"))
+        zip_args.append(shlex.quote("assets/bsh.dex"))
+
     custom_icon_path = "assets/zzz_icon.png"
     if os.path.exists(custom_icon_path):
         target_assets_dir = os.path.join(inject_dir, "assets")
@@ -287,15 +325,12 @@ def main():
     if no_sign:
         subprocess.run(f"zip -q -d {shlex.quote(abs_output_apk)} 'META-INF/*' 2>/dev/null", shell=True)
 
-    # 4 字节页面对齐 (zipalign)
     zipalign_bin = shutil.which("zipalign")
     if zipalign_bin:
         aligned_apk = os.path.join(work_dir, "aligned_temp.apk")
         run_cmd(f"{shlex.quote(zipalign_bin)} -p -f 4 {shlex.quote(abs_output_apk)} {shlex.quote(aligned_apk)}")
         if os.path.exists(aligned_apk) and os.path.getsize(aligned_apk) > 0:
             shutil.move(aligned_apk, abs_output_apk)
-    else:
-        log("WARN", "未检测到 zipalign 工具，跳过 4 字节对齐")
 
     t_phase4 = round(time.time() - t0, 2)
     log("TIME", f"  -> 阶段 4 耗时: {t_phase4}s")
@@ -320,11 +355,7 @@ def main():
             else: os.remove(p)
 
     t_cost = round(time.time() - t_start, 2)
-    if no_sign:
-        log("OK", f"处理完成，总耗时: {t_cost}s (未签名)，输出文件: {output_apk}")
-    else:
-        t_nosign = round(t_cost - t_phase5, 2)
-        log("OK", f"处理完成，总耗时: {t_cost}s (不含签名: {t_nosign}s)，输出文件: {output_apk}")
+    log("OK", f"构建完成，耗时: {t_cost}s, 输出: {output_apk}")
 
 if __name__ == "__main__":
     main()

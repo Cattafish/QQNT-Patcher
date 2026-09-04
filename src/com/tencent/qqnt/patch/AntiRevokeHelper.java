@@ -38,8 +38,13 @@ public class AntiRevokeHelper {
     );
 
     public static byte[] handleMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
-        // ★ 每次冷启动 QQ 仅触发 1 次静默检查更新
+        // 冷启动更新检测与脚本引擎激活
         ConfigManager.triggerColdStartUpdateCheck();
+
+        // ★ 绑定 session，供脚本引擎 MsgSender 发送消息使用
+        if (session != null) {
+            com.tencent.qqnt.patch.plugin.MsgSender.setSession(session);
+        }
 
         if (cmd == null || buf == null) {
             return buf;

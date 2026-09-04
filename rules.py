@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件 (已修复画廊 VerifyError 字节码对齐)
+Patch 规则定义文件 (含 AIODelegate 会话精准感知)
 """
 
 import struct
@@ -88,7 +88,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgList(Ljava/util/List;)V
 """
     },
-    # 规则 6：【画廊大图放行】(修复 VerifyError：将残留的 move-result 一同消除)
+    # 规则 6：画廊大图放行 a.b
     {
         "name": "闪照破解 (AIO 画廊大图放行 a.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
@@ -98,7 +98,7 @@ RULES = [
         "smali": """
     const/4 v2, 0x0"""
     },
-    # 规则 7：【画廊大图放行】(修复 VerifyError：将残留的 move-result 一同消除)
+    # 规则 7：画廊大图放行 b.b
     {
         "name": "闪照破解 (AIO 画廊大图放行 b.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
@@ -108,7 +108,7 @@ RULES = [
         "smali": """
     const/4 v6, 0x0"""
     },
-    # 规则 8：PicElement 所有构造函数脱壳
+    # 规则 8：PicElement 构造函数脱壳
     {
         "name": "闪照破解 (PicElement 所有构造函数脱壳)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/PicElement;",
@@ -120,7 +120,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handlePicElement(Lcom/tencent/qqnt/kernel/nativeinterface/PicElement;)V
     return-void"""
     },
-    # 规则 9：MsgRecord 所有构造函数脱壳
+    # 规则 9：MsgRecord 构造函数脱壳
     {
         "name": "闪照破解 (MsgRecord 所有构造函数脱壳)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;",
@@ -132,7 +132,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
     return-void"""
     },
-    # 规则 10：UI 视图模型 AIOElementType$f 构造函数脱壳
+    # 规则 10：AIOElementType$f 构造函数脱壳
     {
         "name": "闪照破解 (AIOElementType.PicElement 构造函数脱壳)",
         "target_class": "Lcom/tencent/qqnt/aio/msg/element/AIOElementType$f;",
@@ -144,7 +144,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleAIOElementPic(Ljava/lang/Object;)V
     return-void"""
     },
-    # 规则 11：实时推送监听总线代理
+    # 规则 11：addKernelMsgListener 实时推送代理
     {
         "name": "闪照破解 (addKernelMsgListener 实时推送代理)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
@@ -154,6 +154,29 @@ RULES = [
     # === [FlashPic Live Push Hook] ===
     invoke-static {p1}, Lcom/tencent/qqnt/patch/FlashPicHelper;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
     move-result-object p1
+"""
+    },
+    # 规则 12：AIO 会话开启监听 (AIODelegate.show)
+    {
+        "name": "AIO 会话开启监听 (AIODelegate.show)",
+        "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
+        "target_method": "show()V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    # === [AIO Open Hook] ===
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIODelegateShow(Ljava/lang/Object;)V
+"""
+    },
+    # 规则 13：AIO 会话关闭监听 (AIODelegate.hide)
+    {
+        "name": "AIO 会话关闭监听 (AIODelegate.hide)",
+        "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
+        "target_method": "hide()V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    # === [AIO Close Hook] ===
+    invoke-static {}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIODelegateHide()V
 """
     }
 ]
