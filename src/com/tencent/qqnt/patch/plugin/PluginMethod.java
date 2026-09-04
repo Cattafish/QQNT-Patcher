@@ -55,7 +55,6 @@ public class PluginMethod {
      * 自动拦截 BeanShell 跨线程/Lambda 逃逸的 Drawable/LayoutParams 垃圾对象，
      * 穿透抓取当前弹窗真实的 EditText 输入内容进行对齐！
      */
-    // 替换 PluginMethod.java 中的 invoke 方法
     public Object invoke(String methodName, Object[] args) throws Exception {
         if (mCompiler == null || mCompiler.getInterpreter() == null) {
             throw new NoSuchMethodException("Command not found: " + methodName);

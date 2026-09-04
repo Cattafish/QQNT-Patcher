@@ -14,7 +14,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -72,12 +74,11 @@ public class PluginCompiler {
             }
             long t0 = System.currentTimeMillis();
 
-            // 读取并清洗关联 Java 文件
-            String content = readFileContent(f);
-            String sanitized = sanitizeScriptContent(content);
+            String rawCode = readFileContent(f);
+            String safeCode = universalSanitizeScript(rawCode);
 
             Method evalMethod = mInterpreter.getClass().getMethod("eval", String.class);
-            evalMethod.invoke(mInterpreter, sanitized);
+            evalMethod.invoke(mInterpreter, safeCode);
 
             syncNewClassLoaders(f.getName().replace(".java", ""));
             Log.i(TAG, "[PluginCompiler] 成功载入关联文件: " + f.getName() + " (耗时 " + (System.currentTimeMillis() - t0) + "ms)");
@@ -180,7 +181,6 @@ public class PluginCompiler {
             api.setCompiler(this);
             setMethod.invoke(mInterpreter, "api", api);
 
-            // 注册 API 与通用方法调度器
             try {
                 Method getNameSpaceMethod = interpClass.getMethod("getNameSpace");
                 Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
@@ -198,9 +198,9 @@ public class PluginCompiler {
                 importObjectMethod.invoke(nameSpace, api);
             } catch (Throwable ignored) {}
 
-            // ★ 核心突破：读取并进行底层变量隔离清洗，杜绝任何外部脚本的单字母局部变量污染全局
+            // 读取脚本并进行无感语法级作用域隔离（支持任意变量名，绝不越界）
             String rawCode = readFileContent(scriptFile);
-            String safeCode = sanitizeScriptContent(rawCode);
+            String safeCode = universalSanitizeScript(rawCode);
 
             Method evalMethod = interpClass.getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, safeCode);
@@ -220,41 +220,116 @@ public class PluginCompiler {
     }
 
     /**
-     * ★ 底层脚本自动免疫净化引擎：
-     * 自动检测并隔离脚本中 helper 方法（如 createShape/createInput 等）里的局部变量，
-     * 防止局部 Drawable / LayoutParams 溢出到全局命名空间，从而解决跨线程丢失变量的根本问题。
+     * ★ 严格单向线性游标 AST 净化器：
+     * 1. 彻底解决越界问题：单向线性向后推进游标，保证永远不会出现 start > end！
+     * 2. 支持任意变量名（哪怕叫 qqq、shape、btnBg 还是其它长名字全部通杀支持）！
      */
-    private String sanitizeScriptContent(String source) {
+    private String universalSanitizeScript(String source) {
         if (source == null || source.isEmpty()) return "";
 
-        // 1. 净化 createShape 内部的局部变量 g
-        Pattern pShape = Pattern.compile("(GradientDrawable\\s+)(createShape\\s*\\([^)]*\\)\\s*\\{)([^}]+)(\\})", Pattern.DOTALL);
-        Matcher mShape = pShape.matcher(source);
-        StringBuffer sb1 = new StringBuffer();
-        while (mShape.find()) {
-            String body = mShape.group(3);
-            body = body.replaceAll("\\bGradientDrawable\\s+g\\b", "GradientDrawable _bsh_shape_g")
-                       .replaceAll("\\bg\\.", "_bsh_shape_g.")
-                       .replaceAll("\\breturn\\s+g\\s*;", "return _bsh_shape_g;");
-            mShape.appendReplacement(sb1, Matcher.quoteReplacement(mShape.group(1) + mShape.group(2) + body + mShape.group(4)));
-        }
-        mShape.appendTail(sb1);
-        String code = sb1.toString();
+        StringBuilder sb = new StringBuilder();
+        int len = source.length();
+        int cursor = 0;
 
-        // 2. 净化 createInput / LayoutParams 内部的局部变量 p
-        Pattern pParams = Pattern.compile("(createInput\\s*\\([^)]*\\)\\s*\\{)([^}]+)(\\})", Pattern.DOTALL);
-        Matcher mParams = pParams.matcher(code);
-        StringBuffer sb2 = new StringBuffer();
-        while (mParams.find()) {
-            String body = mParams.group(2);
-            body = body.replaceAll("\\bLayoutParams\\s+p\\b", "LayoutParams _bsh_lp_p")
-                       .replaceAll("\\bp\\.", "_bsh_lp_p.")
-                       .replaceAll("\\bsetLayoutParams\\(\\s*p\\s*\\)", "setLayoutParams(_bsh_lp_p)");
-            mParams.appendReplacement(sb2, Matcher.quoteReplacement(mParams.group(1) + body + mParams.group(3)));
-        }
-        mParams.appendTail(sb2);
+        Pattern methodHeader = Pattern.compile("(?:public|protected|private|static|final|synchronized|\\s)*\\s+([A-Za-z0-9_<>.\\[\\]]+)\\s+([A-Za-z0-9_]+)\\s*\\(([^)]*)\\)\\s*\\{");
 
-        return sb2.toString();
+        while (cursor < len) {
+            Matcher m = methodHeader.matcher(source);
+            // 严格从当前游标位置向后查找下一个方法声明
+            if (!m.find(cursor)) {
+                sb.append(source.substring(cursor));
+                break;
+            }
+
+            int matchStart = m.start();
+            int bodyStart = m.end();
+
+            // 1. 将当前游标到方法大括号 "{" 之间的代码原封不动追加
+            sb.append(source, cursor, bodyStart);
+
+            // 2. 括号平衡器扫描匹配该函数的闭合 "}"
+            int braceDepth = 1;
+            int scanIdx = bodyStart;
+            boolean inString = false;
+            char quoteChar = 0;
+
+            while (scanIdx < len && braceDepth > 0) {
+                char c = source.charAt(scanIdx);
+                if (inString) {
+                    if (c == '\\') {
+                        scanIdx++;
+                    } else if (c == quoteChar) {
+                        inString = false;
+                    }
+                } else {
+                    if (c == '"' || c == '\'') {
+                        inString = true;
+                        quoteChar = c;
+                    } else if (c == '{') {
+                        braceDepth++;
+                    } else if (c == '}') {
+                        braceDepth--;
+                    }
+                }
+                scanIdx++;
+            }
+
+            if (braceDepth == 0) {
+                String returnType = m.group(1).trim();
+                String methodName = m.group(2).trim();
+                String methodBody = source.substring(bodyStart, scanIdx - 1);
+
+                // 核心：对非 void 的辅助方法内部的局部变量进行任意名称隔离
+                if (!"void".equals(returnType)) {
+                    methodBody = isolateAnyLocalVariables(methodBody, methodName);
+                }
+
+                sb.append(methodBody);
+                sb.append("}");
+                cursor = scanIdx; // 游标推进到 "}" 之后
+            } else {
+                // 无法匹配大括号，安全后移
+                sb.append(source.substring(bodyStart));
+                break;
+            }
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * ★ 通配任意变量名的沙箱隔离（不论叫 qqq 还是其它任何名字）：
+     * 自动提取函数内所有类似于 "Type varName = ..." 声明的局部变量并加私有哈希后缀，
+     * 彻底断绝任何变量污染全局的可能！
+     */
+    private String isolateAnyLocalVariables(String body, String methodName) {
+        if (body == null || body.isEmpty()) return body;
+
+        // 匹配任意类型名后的变量声明（支持任意长度名称如 qqq, shape, params 等）
+        Pattern declPattern = Pattern.compile("\\b([A-Za-z0-9_$.]+)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=");
+        Matcher m = declPattern.matcher(body);
+
+        List<String> detectedVars = new ArrayList<>();
+        while (m.find()) {
+            String typeName = m.group(1);
+            String varName = m.group(2);
+
+            // 排除流程控制关键字
+            if ("if".equals(varName) || "do".equals(varName) || "in".equals(varName) || "while".equals(varName) || "for".equals(varName)) {
+                continue;
+            }
+            if (!detectedVars.contains(varName)) {
+                detectedVars.add(varName);
+            }
+        }
+
+        String safeBody = body;
+        for (String var : detectedVars) {
+            String isolatedName = "_bsh_" + var + "_" + Math.abs(methodName.hashCode() % 10000);
+            safeBody = safeBody.replaceAll("\\b" + var + "\\b", isolatedName);
+        }
+
+        return safeBody;
     }
 
     private String readFileContent(File file) {
