@@ -116,15 +116,12 @@ curl -L -o tools/dexlib2.jar https://repo1.maven.org/maven2/org/smali/dexlib2/2.
 curl -L -o tools/guava.jar https://repo1.maven.org/maven2/com/google/guava/guava/18.0/guava-18.0.jar
 
 # 2. 动态脚本引擎与协议依赖 (BeanShell 3.0.0 + Dx + Protobuf)
-# 官方 Maven Central 源：
-curl -L -o tools/bsh.jar https://repo1.maven.org/maven2/io/github/copylibs/beanshell-android-lambda/3.0.0.beta10/beanshell-android-lambda-3.0.0.beta10.jar
+# 说明：BeanShell Android 官方打包为 AAR 架构，此处通过下载 AAR 并提取其内部 classes.jar 生成 bsh.jar
+curl -f -L -o tools/bsh.aar https://repo1.maven.org/maven2/io/github/copylibs/beanshell-android-lambda/3.0.0.beta10/beanshell-android-lambda-3.0.0.beta10.aar
+python3 -c "import zipfile, os; open('tools/bsh.jar', 'wb').write(zipfile.ZipFile('tools/bsh.aar').read('classes.jar')); os.remove('tools/bsh.aar')"
+
 curl -L -o tools/dx.jar https://repo1.maven.org/maven2/com/jakewharton/android/repackaged/dalvik-dx/9.0.0_r3/dalvik-dx-9.0.0_r3.jar
 curl -L -o tools/protobuf.jar https://repo1.maven.org/maven2/com/google/protobuf/protobuf-java/3.25.3/protobuf-java-3.25.3.jar
-
-# （备用）如果国内下载速度慢，可将上述第 2 组替换为阿里云镜像源：
-# curl -L -o tools/bsh.jar https://maven.aliyun.com/repository/public/io/github/copylibs/beanshell-android-lambda/3.0.0.beta10/beanshell-android-lambda-3.0.0.beta10.jar
-# curl -L -o tools/dx.jar https://maven.aliyun.com/repository/public/com/jakewharton/android/repackaged/dalvik-dx/9.0.0_r3/dalvik-dx-9.0.0_r3.jar
-# curl -L -o tools/protobuf.jar https://maven.aliyun.com/repository/public/com/google/protobuf/protobuf-java/3.25.3/protobuf-java-3.25.3.jar
 ```
 
 ---
