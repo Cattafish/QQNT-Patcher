@@ -8,6 +8,7 @@ import android.util.Log;
 import android.widget.Toast;
 
 import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
+import me.yxp.qfun.plugin.bean.ForbidInfo;
 import me.yxp.qfun.plugin.bean.FriendInfo;
 import me.yxp.qfun.plugin.bean.GroupInfo;
 import me.yxp.qfun.plugin.bean.MemberInfo;
@@ -47,7 +48,6 @@ public class PluginMethod {
         this.mCompiler = compiler;
     }
 
-    // ================= 基础日志与 Toast =================
     public void log(Object msg) { log("log.txt", msg); }
 
     public synchronized void log(String fileName, Object msg) {
@@ -90,6 +90,22 @@ public class PluginMethod {
         if (mCompiler != null) mCompiler.loadJava(path);
     }
 
+    public void loadDex(String path) {
+        try {
+            if (mCompiler != null && mCompiler.getClassLoader() != null) {
+                File dexFile = new File(path);
+                if (!dexFile.exists()) return;
+                File optDir = new File(mPluginDir, "dex_opt");
+                if (!optDir.exists()) optDir.mkdirs();
+                Class<?> dexLoaderClz = Class.forName("dalvik.system.DexClassLoader");
+                ClassLoader loader = (ClassLoader) dexLoaderClz.getConstructor(
+                        String.class, String.class, String.class, ClassLoader.class
+                ).newInstance(dexFile.getAbsolutePath(), optDir.getAbsolutePath(), null, mCompiler.getClassLoader());
+                mCompiler.getClassLoader().addClassLoader(loader);
+            }
+        } catch (Throwable ignored) {}
+    }
+
     public void addItem(String name, String callbackMethod) {
         if (mCompiler != null) mCompiler.addMenuItem(name, callbackMethod);
     }
@@ -98,7 +114,7 @@ public class PluginMethod {
         return com.tencent.qqnt.patch.AppContext.getCurrentActivity();
     }
 
-    // ================= 消息发送全家桶 =================
+    // ================= 消息发送 =================
     public void sendMsg(String peerUin, String msg, int chatType) {
         MsgSender.sendMsg(peerUin, msg, chatType);
     }
@@ -181,11 +197,16 @@ public class PluginMethod {
     // ================= QFun 群管与群信息接口 =================
     public List<GroupInfo> getGroupList() { return TroopHelper.getGroupList(); }
     public Object getGroupInfo(String troopUin) { return TroopHelper.getGroupInfo(troopUin); }
+    public List<MemberInfo> getGroupMemberList(String troopUin) { return TroopHelper.getGroupMemberList(troopUin); }
+    public MemberInfo getMemberInfo(String troopUin, String memberUin) { return TroopHelper.getMemberInfo(troopUin, memberUin); }
+    public List<ForbidInfo> getProhibitList(String troopUin) { return TroopHelper.getProhibitList(troopUin); }
+    public boolean isShutUp(String troopUin) { return TroopHelper.isShutUp(troopUin); }
     public void shutUp(String troopUin, String memberUin, long seconds) { TroopHelper.shutUp(troopUin, memberUin, seconds); }
     public void shutUpAll(String troopUin, boolean enable) { TroopHelper.shutUpAll(troopUin, enable); }
     public void kickGroup(String troopUin, String memberUin, boolean block) { TroopHelper.kickGroup(troopUin, memberUin, block); }
     public void changeMemberName(String troopUin, String memberUin, String newCard) { TroopHelper.changeMemberName(troopUin, memberUin, newCard); }
     public void setGroupAdmin(String troopUin, String memberUin, boolean enable) { TroopHelper.setGroupAdmin(troopUin, memberUin, enable); }
+    public void setGroupMemberTitle(String troopUin, String uin, String title) { TroopHelper.setGroupMemberTitle(troopUin, uin, title); }
     public void clockIn(String troopUin) { TroopHelper.clockIn(troopUin); }
 
     // ================= QFun 好友与点赞接口 =================

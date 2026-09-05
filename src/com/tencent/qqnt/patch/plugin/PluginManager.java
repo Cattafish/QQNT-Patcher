@@ -154,6 +154,24 @@ public class PluginManager {
         });
     }
 
+    public static void dispatchPaiYiPai(final String peerUin, final int cType, final String opUin) {
+        if (sLoadedPlugins.isEmpty()) return;
+        sWorkerPool.execute(() -> {
+            for (PluginCompiler compiler : sLoadedPlugins) {
+                compiler.onPaiYiPai(peerUin, cType, opUin);
+            }
+        });
+    }
+
+    public static void dispatchTroopShutUp(final String troopUin, final String memberUin, final long time, final String opUin) {
+        if (sLoadedPlugins.isEmpty()) return;
+        sWorkerPool.execute(() -> {
+            for (PluginCompiler compiler : sLoadedPlugins) {
+                compiler.shutUpGroup(troopUin, memberUin, time, opUin);
+            }
+        });
+    }
+
     public static void dispatchRecvMsg(final List<?> msgList) {
         if (msgList == null || msgList.isEmpty() || sLoadedPlugins.isEmpty()) return;
         sWorkerPool.execute(() -> {

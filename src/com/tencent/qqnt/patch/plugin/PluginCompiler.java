@@ -123,7 +123,6 @@ public class PluginCompiler {
 
             Method setMethod = interpClass.getMethod("set", String.class, Object.class);
 
-            // ★ 核心增强：智能代理 context，解决 Android 11+ 对 ApplicationContext 获取 WindowManager 报错的问题
             Context smartContext = new ContextWrapper(mContext) {
                 @Override
                 public Object getSystemService(String name) {
@@ -153,7 +152,6 @@ public class PluginCompiler {
                 Constructor<?> bshMethodCtor = bshMethodClz.getConstructor(Method.class, Object.class);
                 Method setMethodM = nameSpace.getClass().getMethod("setMethod", bshMethodClz);
 
-                // 导出 PluginMethod 的全部成员供脚本无前缀直接调用
                 for (Method m : PluginMethod.class.getDeclaredMethods()) {
                     if (Modifier.isPublic(m.getModifiers()) && !m.getName().contains("$")) {
                         try {
@@ -167,9 +165,7 @@ public class PluginCompiler {
                 importObjectMethod.invoke(nameSpace, api);
             } catch (Throwable ignored) {}
 
-            // ★ 直接直传原生 Java 代码执行，不再进行任何破坏性的文本变量重命名
             String rawCode = readFileContent(scriptFile);
-
             Method evalMethod = interpClass.getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, rawCode);
 
@@ -197,6 +193,18 @@ public class PluginCompiler {
     }
 
     public void chatInterface(int cType, String peerUin, String name) {
+        invokeScriptMethod("chatInterface", new Class[]{int.class, String.class, String.class}, new Object[]{cType, peerUin, name});
+    }
+
+    public void onPaiYiPai(String peerUin, int chatType, String opUin) {
+        invokeScriptMethod("onPaiYiPai", new Class[]{String.class, int.class, String.class}, new Object[]{peerUin, chatType, opUin});
+    }
+
+    public void shutUpGroup(String troopUin, String memberUin, long time, String opUin) {
+        invokeScriptMethod("shutUpGroup", new Class[]{String.class, String.class, long.class, String.class}, new Object[]{troopUin, memberUin, time, opUin});
+    }
+
+    private void invokeScriptMethod(String methodName, Class<?>[] types, Object[] args) {
         if (!mIsRunning || mInterpreter == null) return;
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(mFixClassLoader);
@@ -204,11 +212,10 @@ public class PluginCompiler {
             Method getNameSpaceMethod = mInterpreter.getClass().getMethod("getNameSpace");
             Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
             Method getMethodM = nameSpace.getClass().getMethod("getMethod", String.class, Class[].class);
-            Object targetMethod = getMethodM.invoke(nameSpace, "chatInterface", new Class[]{int.class, String.class, String.class});
-
+            Object targetMethod = getMethodM.invoke(nameSpace, methodName, types);
             if (targetMethod != null) {
                 Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
-                invokeM.invoke(targetMethod, new Object[]{cType, peerUin, name}, mInterpreter);
+                invokeM.invoke(targetMethod, args, mInterpreter);
             }
         } catch (Throwable ignored) {}
         finally {
