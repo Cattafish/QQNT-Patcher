@@ -1,0 +1,6 @@
+全面测试 QFun 兼容生态：
+1. 气泡长按菜单 (addMenuItem)
+2. 鉴权票据 (Skey, Pskey, RKey, Bkn)
+3. 群管与好友接口 (getGroupList, getAllFriend, 成员列表)
+4. 引用回复与拍一拍
+5. 会话与协议事件监听

@@ -106,15 +106,24 @@ public class PluginMethod {
         } catch (Throwable ignored) {}
     }
 
+    // ================= 菜单注册 =================
     public void addItem(String name, String callbackMethod) {
         if (mCompiler != null) mCompiler.addMenuItem(name, callbackMethod);
+    }
+
+    public void addMenuItem(String name, String callbackMethod) {
+        if (mCompiler != null) mCompiler.addMsgMenuItem(name, callbackMethod, new int[0]);
+    }
+
+    public void addMenuItem(String name, String callbackMethod, int[] msgTypes) {
+        if (mCompiler != null) mCompiler.addMsgMenuItem(name, callbackMethod, msgTypes);
     }
 
     public Activity getNowActivity() {
         return com.tencent.qqnt.patch.AppContext.getCurrentActivity();
     }
 
-    // ================= 消息发送 =================
+    // ================= 消息发送全家桶 =================
     public void sendMsg(String peerUin, String msg, int chatType) {
         MsgSender.sendMsg(peerUin, msg, chatType);
     }
@@ -214,7 +223,7 @@ public class PluginMethod {
     public boolean isFriend(String uin) { return FriendHelper.isFriend(uin); }
     public void sendZan(String uin, int count) { FriendHelper.sendZan(uin, count); }
 
-    // ================= QFun Token / Cookie 接口 =================
+    // ================= QFun Token / Cookie / RKey 接口 =================
     public String getRealSkey() { return CookieHelper.getRealSkey(); }
     public String getSkey() { return CookieHelper.getSkey(); }
     public String getStweb() { return CookieHelper.getStweb(); }
@@ -222,6 +231,8 @@ public class PluginMethod {
     public String getPt4Token(String domain) { return CookieHelper.getPt4Token(domain); }
     public long getBkn(String key) { return CookieHelper.getBkn(key); }
     public String getGTK(String domain) { return CookieHelper.getGTK(domain); }
+    public String getFriendRKey() { return CookieHelper.getFriendRKey(); }
+    public String getGroupRKey() { return CookieHelper.getGroupRKey(); }
 
     // ================= 数据持久化 =================
     public synchronized void putString(String configName, String key, String value) {

@@ -58,7 +58,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleSendMsg(Ljava/util/ArrayList;)V
 """
     },
-    # 规则 4：AIO 气泡数据构造统一总线 (★ 必须使用原版安全的 invoke-static {p1}，严禁触碰 v0 破坏 this)
+    # 规则 4：AIO 气泡数据构造统一总线
     {
         "name": "AIO 气泡数据统一总线 (AIOMsgItem)",
         "target_class": "Lcom/tencent/mobileqq/aio/msg/AIOMsgItem;",
@@ -68,7 +68,7 @@ RULES = [
     invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOMsgItem(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
 """
     },
-    # 规则 5：拉取消息列表统一总线 (PatchBridge.handleRecvMsgList)
+    # 规则 5：拉取消息列表统一总线
     {
         "name": "拉取消息列表统一总线 (n.a)",
         "target_class": "Lcom/tencent/qqnt/msg/n;",
@@ -79,7 +79,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleRecvMsgList(Ljava/util/List;)V
 """
     },
-    # 规则 6：画廊大图放行 a.b (动态捕获寄存器 \1)
+    # 规则 6：画廊大图放行 a.b
     {
         "name": "闪照破解 (AIO 画廊大图放行 a.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
@@ -89,7 +89,7 @@ RULES = [
         "smali": """
     const/4 \\1, 0x0"""
     },
-    # 规则 7：画廊大图放行 b.b (动态捕获寄存器 \1)
+    # 规则 7：画廊大图放行 b.b
     {
         "name": "闪照破解 (AIO 画廊大图放行 b.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
@@ -99,7 +99,7 @@ RULES = [
         "smali": """
     const/4 \\1, 0x0"""
     },
-    # 规则 8：推送消息监听统一代理 (★ 必须使用原版安全的 invoke-static {p1}，严禁触碰 v0 破坏 nativeRef)
+    # 规则 8：推送消息监听统一代理
     {
         "name": "推送监听统一代理 (addKernelMsgListener)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
@@ -110,7 +110,7 @@ RULES = [
     move-result-object p1
 """
     },
-    # 规则 9：AIO 会话开启总线 (此处 p0 是 v20，唯一需要 move-object/16 的地方)
+    # 规则 9：AIO 会话开启总线
     {
         "name": "AIO 会话开启总线 (AIODelegate.show)",
         "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
@@ -121,7 +121,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOShow(Ljava/lang/Object;)V
 """
     },
-    # 规则 10：AIO 会话关闭总线 (AIODelegate.hide)
+    # 规则 10：AIO 会话关闭总线
     {
         "name": "AIO 会话关闭总线 (AIODelegate.hide)",
         "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
@@ -129,6 +129,53 @@ RULES = [
         "type": "INSERT_BEFORE",
         "smali": """
     invoke-static {}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOHide()V
+"""
+    },
+    # 规则 11：气泡长按菜单动态挂载 (QQCustomMenuExpandableLayout.setMenu)
+    {
+        "name": "AIO 气泡长按菜单挂载",
+        "target_class": "Lcom/tencent/qqnt/aio/menu/ui/QQCustomMenuExpandableLayout;",
+        "target_method": "setMenu(Lcom/tencent/qqnt/aio/menu/ui/c;Landroid/view/View;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p0
+    move-object/16 v1, p1
+    move-object/16 v2, p2
+    invoke-static {v0, v1, v2}, Lcom/tencent/qqnt/patch/plugin/AioMenuInjector;->onSetMenu(Ljava/lang/Object;Ljava/lang/Object;Landroid/view/View;)V
+"""
+    },
+    # 规则 12：图片 RKey 防盗链密钥截获 (MsgRespHandler.dispatchRespMsg)
+    {
+        "name": "图片 RKey 自动监听",
+        "target_class": "Lmqq/app/msghandle/MsgRespHandler;",
+        "target_method": "dispatchRespMsg(Lmqq/app/MobileQQ;Lcom/tencent/mobileqq/msf/sdk/MsfMessagePair;Lcom/tencent/mobileqq/msf/sdk/MsfRespHandleUtil;Lcom/tencent/mobileqq/msf/sdk/MsfServiceSdk;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p2
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/RKeyManager;->onDispatchRespMsg(Ljava/lang/Object;)V
+"""
+    },
+    # 规则 13：退群事件监听 (deleteTroopMember)
+    {
+        "name": "群成员退群监听",
+        "target_class": "Lcom/tencent/mobileqq/troop/api/impl/TroopMemberInfoServiceImpl;",
+        "target_method": "deleteTroopMember(Ljava/lang/String;Ljava/lang/String;Z)Z",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p1
+    move-object/16 v1, p2
+    invoke-static {v0, v1}, Lcom/tencent/qqnt/patch/plugin/PluginManager;->dispatchTroopQuit(Ljava/lang/String;Ljava/lang/String;)V
+"""
+    },
+    # 规则 14：进群事件监听 (TroopMemberAddPushProcessor.a)
+    {
+        "name": "群成员进群监听",
+        "target_class": "Lcom/tencent/qqnt/push/processor/TroopMemberAddPushProcessor;",
+        "target_method": "a(Ljava/util/ArrayList;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p1
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/TroopMemberJoinHandler;->onPushReceive(Ljava/util/ArrayList;)V
 """
     }
 ]
@@ -188,8 +235,7 @@ class FastDexParser:
             if self.get_proto_desc(p_idx) == "(Landroid/content/Context;)Ljava/util/List;":
                 matching_proto_indices.add(p_idx)
 
-        if not matching_proto_indices:
-            return None, None
+        if not matching_proto_indices: return None, None
 
         for i in range(self.class_defs_size):
             super_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 8)[0]
@@ -238,8 +284,7 @@ class FastDexParser:
             if "SimpleItemProcessor" in s:
                 target_str_ids.add(s_idx)
 
-        if not target_str_ids:
-            return None
+        if not target_str_ids: return None
 
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
@@ -290,13 +335,8 @@ class FastDexParser:
                     for k in range(insns_size):
                         if insns_start + k * 2 + 4 > len(self.data): break
                         opcode = self.data[insns_start + k * 2]
-                        if opcode == 0x1A:
+                        if opcode == 0x1A or opcode == 0x1B:
                             ref_str_idx = struct.unpack_from('<H', self.data, insns_start + k * 2 + 2)[0]
-                            if ref_str_idx in target_str_ids:
-                                desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
-                                return self.get_string(desc_idx)[1:-1].replace('/', '.')
-                        elif opcode == 0x1B:
-                            ref_str_idx = struct.unpack_from('<I', self.data, insns_start + k * 2 + 2)[0]
                             if ref_str_idx in target_str_ids:
                                 desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
                                 return self.get_string(desc_idx)[1:-1].replace('/', '.')

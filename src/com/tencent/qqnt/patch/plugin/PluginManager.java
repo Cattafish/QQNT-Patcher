@@ -145,6 +145,17 @@ public class PluginManager {
         });
     }
 
+    public static void invokeMsgMenuItem(final String pluginId, final String callback, final Object msgData) {
+        sWorkerPool.execute(() -> {
+            for (PluginCompiler compiler : sLoadedPlugins) {
+                if (pluginId.equals(compiler.getPluginId()) && compiler.isRunning()) {
+                    compiler.invokeMsgMenuItem(callback, msgData);
+                    return;
+                }
+            }
+        });
+    }
+
     public static void dispatchChatInterface(final int cType, final String peerUin, final String name) {
         if (sLoadedPlugins.isEmpty()) return;
         sWorkerPool.execute(() -> {
@@ -172,6 +183,24 @@ public class PluginManager {
         });
     }
 
+    public static void dispatchTroopJoin(final String troopUin, final String memberUin) {
+        if (sLoadedPlugins.isEmpty()) return;
+        sWorkerPool.execute(() -> {
+            for (PluginCompiler compiler : sLoadedPlugins) {
+                compiler.joinGroup(troopUin, memberUin);
+            }
+        });
+    }
+
+    public static void dispatchTroopQuit(final String troopUin, final String memberUin) {
+        if (sLoadedPlugins.isEmpty()) return;
+        sWorkerPool.execute(() -> {
+            for (PluginCompiler compiler : sLoadedPlugins) {
+                compiler.quitGroup(troopUin, memberUin);
+            }
+        });
+    }
+
     public static void dispatchRecvMsg(final List<?> msgList) {
         if (msgList == null || msgList.isEmpty() || sLoadedPlugins.isEmpty()) return;
         sWorkerPool.execute(() -> {
@@ -179,9 +208,7 @@ public class PluginManager {
                 for (Object obj : msgList) {
                     if (obj instanceof MsgRecord) {
                         MsgRecord record = (MsgRecord) obj;
-                        if (record.msgId > 0 && !sHandledMsgIds.add(record.msgId)) {
-                            continue;
-                        }
+                        if (record.msgId > 0 && !sHandledMsgIds.add(record.msgId)) continue;
                         MsgData msgData = new MsgData(record);
                         for (PluginCompiler compiler : sLoadedPlugins) {
                             compiler.onMsg(msgData);
@@ -264,8 +291,7 @@ public class PluginManager {
         List<PluginCompiler> copyList = new ArrayList<>(sLoadedPlugins);
         sLoadedPlugins.clear();
         for (PluginCompiler compiler : copyList) {
-            try { compiler.stop(); }
-            catch (Throwable ignored) {}
+            try { compiler.stop(); } catch (Throwable ignored) {}
         }
     }
 
@@ -296,7 +322,7 @@ public class PluginManager {
                         }
                     }
                 }
-                Log.i(TAG, "[PluginManager] 脚本扫描重载完成，运行中: " + count);
+                Log.i(TAG, "[PluginManager] 脚本重载完成，运行中: " + count);
             } catch (Throwable t) {
                 Log.e(TAG, "[PluginManager] reloadAll 异常", t);
             }
@@ -307,19 +333,14 @@ public class PluginManager {
         File mediaDir = null;
         try {
             File[] mediaDirs = context.getExternalMediaDirs();
-            if (mediaDirs != null && mediaDirs.length > 0 && mediaDirs[0] != null) {
-                mediaDir = mediaDirs[0];
-            }
+            if (mediaDirs != null && mediaDirs.length > 0 && mediaDirs[0] != null) mediaDir = mediaDirs[0];
         } catch (Throwable ignored) {}
-        if (mediaDir == null) {
-            mediaDir = new File(Environment.getExternalStorageDirectory(), "Android/media/" + context.getPackageName());
-        }
+        if (mediaDir == null) mediaDir = new File(Environment.getExternalStorageDirectory(), "Android/media/" + context.getPackageName());
         return new File(mediaDir, "zzz/plugins");
     }
 
     private static void copyFile(File src, File dst) throws Exception {
-        try (InputStream in = new FileInputStream(src);
-             OutputStream out = new FileOutputStream(dst)) {
+        try (InputStream in = new FileInputStream(src); OutputStream out = new FileOutputStream(dst)) {
             byte[] buf = new byte[8192];
             int n;
             while ((n = in.read(buf)) != -1) out.write(buf, 0, n);

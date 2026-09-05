@@ -30,9 +30,12 @@ public class View {
     public void setTag(Object tag) {}
     public Object getTag() { return null; }
     public View findViewWithTag(Object tag) { return null; }
+    public void postInvalidate() {}
     public void postInvalidateDelayed(long delayMilliseconds) {}
     public boolean post(Runnable action) { return false; }
     protected void onDraw(Canvas canvas) {}
+
+    public static int generateViewId() { return 0; }
 
     public interface OnClickListener { void onClick(View v); }
     public void setOnClickListener(OnClickListener l) {}

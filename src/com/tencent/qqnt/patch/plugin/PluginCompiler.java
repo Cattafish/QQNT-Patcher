@@ -16,8 +16,10 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class PluginCompiler {
 
@@ -30,6 +32,22 @@ public class PluginCompiler {
     private volatile boolean mIsRunning = false;
     private final Map<String, String> mMenuItems = new LinkedHashMap<>();
     private final FixClassLoader mFixClassLoader;
+
+    private static final Map<String, MsgMenuItemInfo> sAllMsgMenuItems = new ConcurrentHashMap<>();
+
+    public static class MsgMenuItemInfo {
+        public String pluginId;
+        public String name;
+        public String callback;
+        public int[] msgTypes;
+        public MsgMenuItemInfo(String pId, String name, String cb, int[] types) {
+            this.pluginId = pId; this.name = name; this.callback = cb; this.msgTypes = types;
+        }
+    }
+
+    public static Map<String, MsgMenuItemInfo> getAllMsgMenuItems() {
+        return Collections.unmodifiableMap(sAllMsgMenuItems);
+    }
 
     public PluginCompiler(Context context, File pluginDir, ClassLoader bshClassLoader) {
         this.mContext = context;
@@ -46,7 +64,13 @@ public class PluginCompiler {
 
     public void addMenuItem(String name, String callback) {
         mMenuItems.put(name, callback);
-        Log.i(TAG, "[PluginCompiler] 脚本 " + mPluginId + " 注册菜单动作: " + name + " -> " + callback);
+        Log.i(TAG, "[PluginCompiler] 脚本 " + mPluginId + " 注册悬浮球菜单: " + name + " -> " + callback);
+    }
+
+    public void addMsgMenuItem(String name, String callback, int[] msgTypes) {
+        String key = mPluginId + "_" + name;
+        sAllMsgMenuItems.put(key, new MsgMenuItemInfo(mPluginId, name, callback, msgTypes));
+        Log.i(TAG, "[PluginCompiler] 脚本 " + mPluginId + " 注册气泡长按菜单: " + name + " -> " + callback);
     }
 
     public void loadJava(String path) {
@@ -58,10 +82,8 @@ public class PluginCompiler {
             if (!f.exists()) return;
             long t0 = System.currentTimeMillis();
             String rawCode = readFileContent(f);
-
             Method evalMethod = mInterpreter.getClass().getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, rawCode);
-
             syncNewClassLoaders(f.getName().replace(".java", ""));
             Log.i(TAG, "[PluginCompiler] 成功载入关联文件: " + f.getName() + " (耗时 " + (System.currentTimeMillis() - t0) + "ms)");
         } catch (Throwable t) {
@@ -187,9 +209,7 @@ public class PluginCompiler {
             byte[] b = new byte[(int) file.length()];
             fis.read(b);
             return new String(b, StandardCharsets.UTF_8);
-        } catch (Throwable t) {
-            return "";
-        }
+        } catch (Throwable t) { return ""; }
     }
 
     public void chatInterface(int cType, String peerUin, String name) {
@@ -202,6 +222,18 @@ public class PluginCompiler {
 
     public void shutUpGroup(String troopUin, String memberUin, long time, String opUin) {
         invokeScriptMethod("shutUpGroup", new Class[]{String.class, String.class, long.class, String.class}, new Object[]{troopUin, memberUin, time, opUin});
+    }
+
+    public void joinGroup(String troopUin, String memberUin) {
+        invokeScriptMethod("joinGroup", new Class[]{String.class, String.class}, new Object[]{troopUin, memberUin});
+    }
+
+    public void quitGroup(String troopUin, String memberUin) {
+        invokeScriptMethod("quitGroup", new Class[]{String.class, String.class}, new Object[]{troopUin, memberUin});
+    }
+
+    public void invokeMsgMenuItem(String callback, Object msgData) {
+        invokeScriptMethod(callback, new Class[]{Object.class}, new Object[]{msgData});
     }
 
     private void invokeScriptMethod(String methodName, Class<?>[] types, Object[] args) {
@@ -274,17 +306,7 @@ public class PluginCompiler {
     }
 
     public void onMsg(Object msgData) {
-        if (!mIsRunning || mInterpreter == null || msgData == null) return;
-        try {
-            Method getNameSpaceMethod = mInterpreter.getClass().getMethod("getNameSpace");
-            Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
-            Method getMethodM = nameSpace.getClass().getMethod("getMethod", String.class, Class[].class);
-            Object targetMethod = getMethodM.invoke(nameSpace, "onMsg", new Class[]{Object.class});
-            if (targetMethod != null) {
-                Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
-                invokeM.invoke(targetMethod, new Object[]{msgData}, mInterpreter);
-            }
-        } catch (Throwable ignored) {}
+        invokeScriptMethod("onMsg", new Class[]{Object.class}, new Object[]{msgData});
     }
 
     public String getMsg(String original) {
@@ -319,6 +341,7 @@ public class PluginCompiler {
             }
         } catch (Throwable ignored) {}
         mMenuItems.clear();
+        sAllMsgMenuItems.entrySet().removeIf(e -> mPluginId.equals(e.getValue().pluginId));
         mInterpreter = null;
     }
 
