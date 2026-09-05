@@ -36,10 +36,14 @@ def log(tag, msg):
 
 def run_cmd(cmd, cwd=None):
     ret = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    out_msg = ret.stdout.decode('utf-8', errors='ignore').strip()
+    err_msg = ret.stderr.decode('utf-8', errors='ignore').strip()
+    if err_msg:
+        for line in err_msg.split("\n"):
+            if "[WARN]" in line:
+                log("WARN", line)
     if ret.returncode != 0:
         log("WARN", f"命令执行异常: {cmd}")
-        err_msg = ret.stderr.decode('utf-8', errors='ignore').strip()
-        out_msg = ret.stdout.decode('utf-8', errors='ignore').strip()
         if err_msg: log("WARN", err_msg)
         if out_msg: log("WARN", out_msg)
         return ""

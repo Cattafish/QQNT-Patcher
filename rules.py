@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件 (画廊寄存器动态捕获自适应 + 纯净事件总线)
+Patch 规则定义文件 (画廊寄存器动态捕获自适应 + 纯净事件总线 + 宽寄存器防溢出)
 """
 
 import struct
@@ -65,7 +65,8 @@ RULES = [
         "target_method": "<init>(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V",
         "type": "INSERT_BEFORE",
         "smali": """
-    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOMsgItem(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
+    move-object/16 v0, p1
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOMsgItem(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
 """
     },
     # 规则 5：拉取消息列表统一总线 (PatchBridge.handleRecvMsgList)
@@ -79,7 +80,7 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleRecvMsgList(Ljava/util/List;)V
 """
     },
-    # 规则 6：画廊大图放行 a.b (★ 动态捕获寄存器 \1，彻底废除死板硬编码 v2)
+    # 规则 6：画廊大图放行 a.b (动态捕获寄存器 \1)
     {
         "name": "闪照破解 (AIO 画廊大图放行 a.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
@@ -89,7 +90,7 @@ RULES = [
         "smali": """
     const/4 \\1, 0x0"""
     },
-    # 规则 7：画廊大图放行 b.b (★ 动态捕获寄存器 \1，彻底废除死板硬编码 v6)
+    # 规则 7：画廊大图放行 b.b (动态捕获寄存器 \1)
     {
         "name": "闪照破解 (AIO 画廊大图放行 b.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
@@ -106,21 +107,23 @@ RULES = [
         "target_method": "addKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)J",
         "type": "INSERT_BEFORE",
         "smali": """
-    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
+    move-object/16 v0, p1
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
     move-result-object p1
 """
     },
-    # 规则 9：AIO 会话开启总线 (PatchBridge.handleAIOShow)
+    # 规则 9：AIO 会话开启总线 (★ 使用 move-object/16 解决 .registers 21 导致的寄存器溢出)
     {
         "name": "AIO 会话开启总线 (AIODelegate.show)",
         "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
-        "target_method": "show()V",
+        "target_method": "show()Landroid/view/View;",
         "type": "INSERT_BEFORE",
         "smali": """
-    invoke-static {p0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOShow(Ljava/lang/Object;)V
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOShow(Ljava/lang/Object;)V
 """
     },
-    # 规则 10：AIO 会话关闭总线 (PatchBridge.handleAIOHide)
+    # 规则 10：AIO 会话关闭总线 (AIODelegate.hide)
     {
         "name": "AIO 会话关闭总线 (AIODelegate.hide)",
         "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",

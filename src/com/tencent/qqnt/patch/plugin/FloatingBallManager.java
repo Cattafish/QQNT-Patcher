@@ -11,7 +11,6 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Log;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -26,6 +25,7 @@ import android.widget.Toast;
 
 import com.tencent.qqnt.patch.AppContext;
 import com.tencent.qqnt.patch.ConfigManager;
+import com.tencent.qqnt.patch.PLog;
 
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
@@ -39,7 +39,7 @@ import java.util.regex.Pattern;
 
 public class FloatingBallManager {
 
-    private static final String TAG = "QQ_DEBUG";
+    private static final String TAG = "FloatingBall";
     private static volatile boolean sRegistered = false;
     private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
 
@@ -61,7 +61,7 @@ public class FloatingBallManager {
         if (sRegistered) return;
         sRegistered = true;
         AppContext.init(context);
-        Log.i(TAG, "[FloatingBall] 接入 AppContext 初始化成功");
+        PLog.d(TAG, "悬浮球管理器初始化完毕");
     }
 
     public static Activity resolveCurrentActivity() {
@@ -74,22 +74,50 @@ public class FloatingBallManager {
         return !name.contains("Setting") && !name.contains("Preference") && !name.contains("Plugin") && !name.contains("Clean");
     }
 
+    /**
+     * 唯一合法入口 1：进入聊天会话 (AIODelegate.show)
+     */
     public static void onAIODelegateShow(Object delegate) {
         if (delegate == null) return;
         sCurrentAIODelegate = new WeakReference<>(delegate);
         sInAIO = true;
         refreshContactFromDelegate(delegate);
+        PLog.d(TAG, "打开聊天界面，准备展示悬浮球 -> peerUin=" + sActivePeerUin + ", cType=" + sActiveChatType);
 
         sMainHandler.post(() -> {
             Activity act = resolveCurrentActivity();
-            if (act != null && isAIOActivity(act)) {
+            if (act != null && sInAIO && isAIOActivity(act)) {
                 hideView();
                 showView(act);
             }
         });
     }
 
+    /**
+     * 唯一合法入口 2：退出聊天会话 (AIODelegate.hide)
+     */
+    public static void onAIODelegateHide() {
+        PLog.d(TAG, "退出聊天界面，立即隐藏悬浮球");
+        sInAIO = false;
+        sActiveChatType = 0;
+        sActivePeerUid = "";
+        sActivePeerUin = "";
+        sActivePeerName = "";
+        sCurrentAIODelegate = null;
+        sMainHandler.post(FloatingBallManager::hideView);
+    }
+
+    /**
+     * ★★★ 核心修复点：
+     * 绝不允许后台消息把 sInAIO 重新置为 true，绝不允许在会话外弹窗！
+     */
     public static void onAIOMsgItemBind(Object msgRecordObj) {
+        // 如果不在聊天会话内，收到任何后台推送、消息列表刷新一律直接忽略！
+        if (!sInAIO) {
+            return;
+        }
+
+        // 仅在会话已经打开的前提下，用于校准内部目标数据，绝不调用 showView()
         if (msgRecordObj == null) return;
         try {
             Class<?> clz = msgRecordObj.getClass();
@@ -107,30 +135,12 @@ public class FloatingBallManager {
                     target = MsgSender.getUinFromUid(target);
                 }
 
-                if (!sInAIO || !target.equals(sActivePeerUin)) {
+                if (target != null && !target.isEmpty()) {
                     sActiveChatType = chatType;
                     sActivePeerUin = target;
-                    sInAIO = true;
-
-                    sMainHandler.post(() -> {
-                        Activity act = resolveCurrentActivity();
-                        if (act != null && isAIOActivity(act)) {
-                            showView(act);
-                        }
-                    });
                 }
             }
         } catch (Throwable ignored) {}
-    }
-
-    public static void onAIODelegateHide() {
-        sInAIO = false;
-        sActiveChatType = 0;
-        sActivePeerUid = "";
-        sActivePeerUin = "";
-        sActivePeerName = "";
-        sCurrentAIODelegate = null;
-        sMainHandler.post(FloatingBallManager::hideView);
     }
 
     public static void refreshContactFromDelegate(Object delegate) {
