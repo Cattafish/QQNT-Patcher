@@ -5,6 +5,8 @@ import android.content.res.Resources;
 import java.io.File;
 
 public class Context {
+    public static final int MODE_PRIVATE = 0;
+
     public AssetManager getAssets() { return null; }
     public Resources getResources() { return null; }
     public ClassLoader getClassLoader() { return null; }

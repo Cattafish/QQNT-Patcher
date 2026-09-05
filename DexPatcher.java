@@ -190,15 +190,7 @@ public class DexPatcher {
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
 
-                // 自动扩展 .locals 至少为 4，避免注入代码破坏方法原始寄存器
-                Matcher locMatcher = Pattern.compile("\\.locals\\s+(\\d+)").matcher(mBody);
-                if (locMatcher.find()) {
-                    int locs = Integer.parseInt(locMatcher.group(1));
-                    if (locs < 4) {
-                        mBody = locMatcher.replaceFirst(".locals 4");
-                    }
-                }
-
+                // 安全注入：严禁修改 .locals 4，否则会破坏 p0 映射导致 Smali 汇编崩溃回滚
                 Matcher headerMatcher = Pattern.compile("(\\.registers\\s+\\d+|\\.locals\\s+\\d+)").matcher(mBody);
                 if (headerMatcher.find()) {
                     int idx = headerMatcher.end();
@@ -214,7 +206,6 @@ public class DexPatcher {
             StringBuffer sb = new StringBuffer();
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
-                // 核心修复：自动将 Python 风格反向引用 \1 / \2 转换为 Java 正则引擎能够解析的 $1 / $2
                 String javaReplacement = rule.smali.replace("\\1", "$1").replace("\\2", "$2").replace("\\3", "$3");
                 String replacedBody = Pattern.compile(rule.regex).matcher(mBody).replaceAll(javaReplacement);
                 methodMatcher.appendReplacement(sb, Matcher.quoteReplacement(replacedBody));

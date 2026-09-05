@@ -9,6 +9,8 @@ import android.view.Window;
 public class Activity extends Context {
     public Intent getIntent() { return null; }
     public void finish() {}
+    public boolean isFinishing() { return false; }
+    public boolean isDestroyed() { return false; }
     public void setContentView(View view, ViewGroup.LayoutParams params) {}
     public void startActivity(Intent intent) {}
     public void runOnUiThread(Runnable action) {}

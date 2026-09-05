@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件 (含 AIODelegate 会话精准感知)
+Patch 规则定义文件 (含 AIO 双保险精准感知)
 """
 
 import struct
@@ -64,16 +64,16 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/MeowHelper;->handleSendMsg(Ljava/util/ArrayList;)V
 """
     },
-    # 规则 4：闪照破解 (AIOMsgItem 气泡构造解密)
+    # 规则 4：AIO 气泡构造感知与闪照解密 (只要进入会话必调，100% 触发)
     {
-        "name": "闪照破解 (AIOMsgItem 气泡构造解密)",
+        "name": "AIO 气泡构造感知 (AIOMsgItem)",
         "target_class": "Lcom/tencent/mobileqq/aio/msg/AIOMsgItem;",
         "target_method": "<init>(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [FlashPic AIOMsgItem Hook] ===
-    move-object/16 v0, p1
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
+    # === [AIOMsgItem Double Check Hook] ===
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIOMsgItemBind(Ljava/lang/Object;)V
 """
     },
     # 规则 5：闪照破解 (批量转换解密)
@@ -83,7 +83,6 @@ RULES = [
         "target_method": "a(Ljava/util/ArrayList;)Ljava/util/ArrayList;",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [FlashPic Batch Transform Hook] ===
     move-object/16 v0, p0
     invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgList(Ljava/util/List;)V
 """
@@ -151,7 +150,6 @@ RULES = [
         "target_method": "addKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)J",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [FlashPic Live Push Hook] ===
     invoke-static {p1}, Lcom/tencent/qqnt/patch/FlashPicHelper;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
     move-result-object p1
 """
@@ -163,9 +161,7 @@ RULES = [
         "target_method": "show()V",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [AIO Open Hook] ===
-    move-object/16 v0, p0
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIODelegateShow(Ljava/lang/Object;)V
+    invoke-static {p0}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIODelegateShow(Ljava/lang/Object;)V
 """
     },
     # 规则 13：AIO 会话关闭监听 (AIODelegate.hide)
@@ -175,7 +171,6 @@ RULES = [
         "target_method": "hide()V",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [AIO Close Hook] ===
     invoke-static {}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIODelegateHide()V
 """
     }

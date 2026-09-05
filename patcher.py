@@ -90,7 +90,6 @@ def compile_helper_dex_incremental(work_dir):
     return target_dex if os.path.exists(target_dex) else None
 
 def compile_bsh_to_asset_dex(work_dir):
-    """将 bsh.jar + dx.jar + protobuf.jar 合并转译为支持完整的独立 assets/bsh.dex"""
     bsh_dex_dir = os.path.join(work_dir, "bsh_dex")
     target_bsh_dex = os.path.join(bsh_dex_dir, "classes.dex")
     final_bsh_dex = os.path.join(work_dir, "bsh.dex")
@@ -104,7 +103,6 @@ def compile_bsh_to_asset_dex(work_dir):
         return final_bsh_dex
 
     os.makedirs(bsh_dex_dir, exist_ok=True)
-    # ★ 注入三合一完整运行时：动态脚本 + 运行时编译器 + 完整 Protobuf 支持
     d8_inputs = f"{shlex.quote(BSH_JAR)} {shlex.quote(DX_JAR)} {shlex.quote(PROTOBUF_JAR)}"
     run_cmd(f"d8 --min-api 26 --output {shlex.quote(bsh_dex_dir)} {d8_inputs}")
 
@@ -215,6 +213,36 @@ def main():
         for name in zf.namelist():
             if re.match(r'^classes\d*\.dex$', name):
                 dex_data_dict[name] = zf.read(name)
+
+    # === [诊断探测：打印目标 AIODelegate 的所有声明方法] ===
+    for d_name, d_bytes in dex_data_dict.items():
+        if b'Lcom/tencent/qqnt/aio/activity/AIODelegate;' in d_bytes:
+            log("INFO", f"正在分析 AIODelegate (位于 {d_name})...")
+            p = rules.FastDexParser(d_bytes)
+            if p.valid:
+                for i in range(p.class_defs_size):
+                    c_idx = struct.unpack_from('<I', p.data, p.class_defs_off + i * 32)[0]
+                    c_name = p.get_type_str(c_idx)
+                    if c_name == "Lcom/tencent/qqnt/aio/activity/AIODelegate;":
+                        c_data_off = struct.unpack_from('<I', p.data, p.class_defs_off + i * 32 + 24)[0]
+                        if c_data_off == 0: continue
+                        pos = c_data_off
+                        s_f, pos = p.read_uleb128(pos)
+                        i_f, pos = p.read_uleb128(pos)
+                        d_m, pos = p.read_uleb128(pos)
+                        v_m, pos = p.read_uleb128(pos)
+                        for _ in range((s_f + i_f) * 2): _, pos = p.read_uleb128(pos)
+                        m_idx = 0
+                        for _ in range(d_m + v_m):
+                            diff, pos = p.read_uleb128(pos)
+                            m_idx += diff
+                            _, pos = p.read_uleb128(pos)
+                            _, pos = p.read_uleb128(pos)
+                            _, proto_idx, name_idx = struct.unpack_from('<HHI', p.data, p.method_ids_off + m_idx * 8)
+                            m_name = p.get_string(name_idx)
+                            proto_desc = p.get_proto_desc(proto_idx)
+                            if any(k in m_name.lower() for k in ["show", "hide", "contact", "aio"]):
+                                log("OK", f"  -> AIODelegate 声明方法: {m_name}{proto_desc}")
 
     def dex_index(name):
         if name == "classes.dex": return 1

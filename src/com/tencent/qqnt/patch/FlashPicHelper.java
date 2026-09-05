@@ -101,12 +101,7 @@ public class FlashPicHelper {
     public static void handleMsgRecord(MsgRecord record) {
         if (record == null) return;
         decryptSingleRecord(record);
-        try {
-            if (record.chatType != 0) {
-                String uin = record.peerUin > 0 ? String.valueOf(record.peerUin) : record.peerUid;
-                com.tencent.qqnt.patch.plugin.FloatingBallManager.updateActiveAIO(record.chatType, uin);
-            }
-        } catch (Throwable ignored) {}
+        // ★ 核心修复：彻底剔除 updateActiveAIO 调用，防止后台新消息污染当前 AIO 界面群号
     }
 
     public static IKernelMsgListener wrapKernelMsgListener(IKernelMsgListener original) {
