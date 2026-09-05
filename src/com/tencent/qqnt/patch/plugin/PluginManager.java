@@ -145,6 +145,15 @@ public class PluginManager {
         });
     }
 
+    public static void dispatchChatInterface(final int cType, final String peerUin, final String name) {
+        if (sLoadedPlugins.isEmpty()) return;
+        sWorkerPool.execute(() -> {
+            for (PluginCompiler compiler : sLoadedPlugins) {
+                compiler.chatInterface(cType, peerUin, name);
+            }
+        });
+    }
+
     public static void dispatchRecvMsg(final List<?> msgList) {
         if (msgList == null || msgList.isEmpty() || sLoadedPlugins.isEmpty()) return;
         sWorkerPool.execute(() -> {
@@ -188,9 +197,7 @@ public class PluginManager {
         if (sBshClassLoader != null) return sBshClassLoader;
         try {
             File codeCache = context.getCodeCacheDir();
-            if (codeCache == null) {
-                codeCache = context.getFilesDir();
-            }
+            if (codeCache == null) codeCache = context.getFilesDir();
 
             File customDex = new File(getPluginsStorageDir(context).getParentFile(), "bsh.dex");
             File targetDex = new File(codeCache, "bsh_engine.dex");
@@ -199,7 +206,6 @@ public class PluginManager {
                 copyFile(customDex, targetDex);
             } else {
                 if (!targetDex.exists() || targetDex.length() == 0) {
-                    Log.i(TAG, "[PluginManager] 正在解压内置 assets/bsh.dex 引擎...");
                     try (InputStream is = context.getAssets().open("bsh.dex");
                          OutputStream os = new FileOutputStream(targetDex)) {
                         byte[] buf = new byte[8192];
@@ -212,42 +218,23 @@ public class PluginManager {
             File optDir = new File(codeCache, "bsh_opt");
             if (!optDir.exists()) optDir.mkdirs();
 
-            // ★ 核心突破：构建具备双向直通能力的智能桥接 Parent
             final Context appCtx = context.getApplicationContext() != null ? context.getApplicationContext() : context;
             ClassLoader bshParent = new ClassLoader(ClassLoader.getSystemClassLoader()) {
                 @Override
                 protected Class<?> findClass(String name) throws ClassNotFoundException {
-                    // 1. 优先从动态脚本类注册表返回 (IReceiver, FunProtoData 等，0纳秒直出)
                     Class<?> scriptClz = FixClassLoader.getScriptClass(name);
-                    if (scriptClz != null) {
-                        return scriptClz;
-                    }
-
-                    // 2. 隔离并阻止 QQ 残缺 protobuf，确保使用 bsh.dex 的完整 protobuf 库
-                    if (name.startsWith("com.google.protobuf.")) {
-                        throw new ClassNotFoundException(name);
-                    }
-
-                    // 3. 查宿主 ClassLoader (QQ 与 helper dex，满足 QQCurrentEnv 等)
+                    if (scriptClz != null) return scriptClz;
+                    if (name.startsWith("com.google.protobuf.")) throw new ClassNotFoundException(name);
                     try {
                         return appCtx.getClassLoader().loadClass(name);
                     } catch (Throwable ignored) {}
-
                     throw new ClassNotFoundException(name);
                 }
             };
 
             Class<?> dexLoaderClass = Class.forName("dalvik.system.DexClassLoader");
-            Constructor<?> ctor = dexLoaderClass.getConstructor(
-                    String.class, String.class, String.class, ClassLoader.class
-            );
-            sBshClassLoader = (ClassLoader) ctor.newInstance(
-                    targetDex.getAbsolutePath(),
-                    optDir.getAbsolutePath(),
-                    null,
-                    bshParent
-            );
-            Log.i(TAG, "[PluginManager] 独立完整版引擎装载成功，大小: " + targetDex.length() + " 字节");
+            Constructor<?> ctor = dexLoaderClass.getConstructor(String.class, String.class, String.class, ClassLoader.class);
+            sBshClassLoader = (ClassLoader) ctor.newInstance(targetDex.getAbsolutePath(), optDir.getAbsolutePath(), null, bshParent);
             return sBshClassLoader;
         } catch (Throwable t) {
             Log.e(TAG, "[PluginManager] 动态加载 bsh.dex 失败: ", t);
@@ -259,20 +246,15 @@ public class PluginManager {
         List<PluginCompiler> copyList = new ArrayList<>(sLoadedPlugins);
         sLoadedPlugins.clear();
         for (PluginCompiler compiler : copyList) {
-            try {
-                compiler.stop();
-            } catch (Throwable t) {
-                Log.w(TAG, "[PluginManager] 停止脚本异常: " + compiler.getPluginId(), t);
-            }
+            try { compiler.stop(); }
+            catch (Throwable ignored) {}
         }
     }
 
     public static void reloadAll(final Context context) {
         sWorkerPool.execute(() -> {
             try {
-                Log.i(TAG, "[PluginManager] 开始全量扫描与重载脚本...");
                 stopAllPlugins();
-
                 ClassLoader loader = getOrCreateBshClassLoader(context);
                 if (loader == null) return;
 
@@ -296,7 +278,7 @@ public class PluginManager {
                         }
                     }
                 }
-                Log.i(TAG, "[PluginManager] 全部脚本扫描重载完成，当前运行数: " + count);
+                Log.i(TAG, "[PluginManager] 脚本扫描重载完成，运行中: " + count);
             } catch (Throwable t) {
                 Log.e(TAG, "[PluginManager] reloadAll 异常", t);
             }
@@ -311,7 +293,6 @@ public class PluginManager {
                 mediaDir = mediaDirs[0];
             }
         } catch (Throwable ignored) {}
-
         if (mediaDir == null) {
             mediaDir = new File(Environment.getExternalStorageDirectory(), "Android/media/" + context.getPackageName());
         }

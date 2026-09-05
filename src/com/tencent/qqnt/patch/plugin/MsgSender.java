@@ -5,11 +5,15 @@ import com.tencent.mobileqq.qroute.QRoute;
 import com.tencent.qqnt.kernel.nativeinterface.IKernelMsgService;
 import com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession;
 import com.tencent.qqnt.kernel.nativeinterface.MsgElement;
+import com.tencent.qqnt.kernel.nativeinterface.PicElement;
 import com.tencent.qqnt.kernel.nativeinterface.TextElement;
 import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
 import com.tencent.relation.common.api.IRelationNTUinAndUidApi;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.regex.Matcher;
@@ -65,18 +69,6 @@ public class MsgSender {
                 }
             }
         } catch (Throwable ignored) {}
-
-        try {
-            Class<?> baseAppClz = Class.forName("com.tencent.common.app.BaseApplicationImpl");
-            Object appImpl = baseAppClz.getMethod("getApplication").invoke(null);
-            if (appImpl != null) {
-                Object appRuntime = appImpl.getClass().getMethod("peekAppRuntime").invoke(appImpl);
-                if (appRuntime != null) {
-                    String uin = (String) appRuntime.getClass().getMethod("getCurrentAccountUin").invoke(appRuntime);
-                    if (uin != null && !uin.isEmpty()) return uin;
-                }
-            }
-        } catch (Throwable ignored) {}
         return "";
     }
 
@@ -88,37 +80,153 @@ public class MsgSender {
 
     public static void sendMsg(Contact contact, String content) {
         if (contact == null || content == null) return;
-        IKernelMsgService service = getMsgService();
-        if (service == null) {
-            Log.e(TAG, "[MsgSender] 未找到 IKernelMsgService");
-            return;
-        }
+        ArrayList<MsgElement> elements = buildElements(contact, content);
+        sendRawElements(contact, elements);
+    }
 
+    public static void sendPtt(String peerUin, String path, int chatType) {
+        sendPtt(peerUin, path, chatType, 0);
+    }
+
+    public static void sendPtt(String peerUin, String path, int chatType, int durationMs) {
+        sendPtt(makeContact(peerUin, chatType), path, durationMs);
+    }
+
+    public static void sendPtt(Contact contact, String path) {
+        sendPtt(contact, path, 0);
+    }
+
+    public static void sendPtt(Contact contact, String path, int durationMs) {
+        if (contact == null || path == null) return;
         try {
-            ArrayList<MsgElement> elements = buildElements(contact, content);
-            if (elements.isEmpty()) return;
+            Class<?> qrouteClz = Class.forName("com.tencent.mobileqq.qroute.QRoute");
+            Class<?> msgUtilClz = Class.forName("com.tencent.qqnt.msg.api.IMsgUtilApi");
+            Object msgUtil = qrouteClz.getMethod("api", Class.class).invoke(null, msgUtilClz);
+            if (msgUtil == null) return;
 
-            long msgId = 0L;
-            try {
-                Method genMethod = service.getClass().getMethod("generateMsgUniqueId", int.class, long.class);
-                msgId = (Long) genMethod.invoke(service, contact.getChatType(), System.currentTimeMillis());
-            } catch (Throwable ignored) {}
+            int ms = durationMs > 0 ? durationMs : estimatePttDurationMs(path);
+            ArrayList<Byte> wave = new ArrayList<>();
+            for (int i = 0; i < 20; i++) wave.add((byte) 20);
 
-            for (Method m : service.getClass().getMethods()) {
-                if ("sendMsg".equals(m.getName()) && m.getParameterTypes().length >= 4) {
-                    m.setAccessible(true);
-                    if (m.getParameterTypes().length == 5) {
-                        m.invoke(service, msgId, contact, elements, new HashMap(), null);
-                    } else {
-                        m.invoke(service, msgId, contact, elements, new HashMap());
-                    }
-                    Log.i(TAG, "[MsgSender] 消息发送已投递: " + contact.getPeerUid() + " -> " + content);
+            Method m = msgUtil.getClass().getMethod("createPttElement", String.class, int.class, ArrayList.class);
+            Object pttElem = m.invoke(msgUtil, path, ms, wave);
+
+            ArrayList<Object> list = new ArrayList<>();
+            list.add(pttElem);
+            sendRawElements(contact, list);
+        } catch (Throwable t) {
+            Log.e(TAG, "[MsgSender] sendPtt 异常", t);
+        }
+    }
+
+    public static void sendReplyMsg(String peerUin, long replyMsgId, String content, int chatType) {
+        sendReplyMsg(makeContact(peerUin, chatType), replyMsgId, content);
+    }
+
+    public static void sendReplyMsg(Contact contact, long replyMsgId, String content) {
+        if (contact == null || content == null) return;
+        try {
+            Class<?> qrouteClz = Class.forName("com.tencent.mobileqq.qroute.QRoute");
+            Class<?> msgUtilClz = Class.forName("com.tencent.qqnt.msg.api.IMsgUtilApi");
+            Object msgUtil = qrouteClz.getMethod("api", Class.class).invoke(null, msgUtilClz);
+            if (msgUtil == null) return;
+
+            Method createReply = msgUtil.getClass().getMethod("createReplyElement", long.class);
+            Object replyElem = createReply.invoke(msgUtil, replyMsgId);
+
+            ArrayList<Object> elements = new ArrayList<>();
+            elements.add(replyElem);
+            elements.addAll(buildElements(contact, content));
+
+            sendRawElements(contact, elements);
+        } catch (Throwable t) {
+            Log.e(TAG, "[MsgSender] sendReplyMsg 异常", t);
+        }
+    }
+
+    public static void sendCard(String peerUin, String jsonStr, int chatType) {
+        sendCard(makeContact(peerUin, chatType), jsonStr);
+    }
+
+    public static void sendCard(Contact contact, String jsonStr) {
+        if (contact == null || jsonStr == null) return;
+        try {
+            Class<?> elemClz = Class.forName("com.tencent.qqnt.kernel.nativeinterface.MsgElement");
+            Object elem = elemClz.getDeclaredConstructor().newInstance();
+            elemClz.getField("elementType").set(elem, 10);
+
+            Class<?> arkClz = Class.forName("com.tencent.qqnt.kernel.nativeinterface.ArkElement");
+            Object arkObj = arkClz.getDeclaredConstructor().newInstance();
+            arkClz.getField("bytesData").set(arkObj, jsonStr);
+            elemClz.getField("arkElement").set(elem, arkObj);
+
+            ArrayList<Object> list = new ArrayList<>();
+            list.add(elem);
+            sendRawElements(contact, list);
+        } catch (Throwable t) {
+            Log.e(TAG, "[MsgSender] sendCard 异常", t);
+        }
+    }
+
+    public static void sendVideo(String peerUin, String path, int chatType) {
+        sendVideo(makeContact(peerUin, chatType), path);
+    }
+
+    public static void sendVideo(Contact contact, String path) {
+        if (contact == null || path == null) return;
+        try {
+            Class<?> qrouteClz = Class.forName("com.tencent.mobileqq.qroute.QRoute");
+            Class<?> msgUtilClz = Class.forName("com.tencent.qqnt.msg.api.IMsgUtilApi");
+            Object msgUtil = qrouteClz.getMethod("api", Class.class).invoke(null, msgUtilClz);
+            if (msgUtil != null) {
+                Method m = msgUtil.getClass().getMethod("createVideoElement", String.class);
+                Object elem = m.invoke(msgUtil, path);
+                ArrayList<Object> list = new ArrayList<>();
+                list.add(elem);
+                sendRawElements(contact, list);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    public static void sendFile(String peerUin, String path, int chatType) {
+        sendFile(makeContact(peerUin, chatType), path);
+    }
+
+    public static void sendFile(Contact contact, String path) {
+        if (contact == null || path == null) return;
+        try {
+            Class<?> qrouteClz = Class.forName("com.tencent.mobileqq.qroute.QRoute");
+            Class<?> msgUtilClz = Class.forName("com.tencent.qqnt.msg.api.IMsgUtilApi");
+            Object msgUtil = qrouteClz.getMethod("api", Class.class).invoke(null, msgUtilClz);
+            if (msgUtil != null) {
+                Method m = msgUtil.getClass().getMethod("createFileElement", String.class);
+                Object elem = m.invoke(msgUtil, path);
+                ArrayList<Object> list = new ArrayList<>();
+                list.add(elem);
+                sendRawElements(contact, list);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    public static void sendPai(String toUin, String peerUin, int chatType) {
+        try {
+            Object runtime = com.tencent.qqnt.patch.AppContext.getAppRuntime();
+            if (runtime == null) return;
+            Method getHandler = runtime.getClass().getMethod("getBusinessHandler", String.class);
+            Object handler = getHandler.invoke(runtime, "com.tencent.mobileqq.paiyipai.PaiYiPaiHandler");
+            if (handler == null) return;
+
+            for (Method m : handler.getClass().getMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length == 4 && p[0] == String.class && p[1] == String.class) {
+                    m.invoke(handler, toUin, peerUin, chatType, 1);
+                    return;
+                } else if (p.length == 4 && p[0] == int.class && p[1] == int.class) {
+                    m.invoke(handler, chatType, 1, toUin, peerUin);
                     return;
                 }
             }
-        } catch (Throwable t) {
-            Log.e(TAG, "[MsgSender] 发送消息异常: ", t);
-        }
+        } catch (Throwable ignored) {}
     }
 
     public static void recall(int chatType, String peerUin, long msgId) {
@@ -139,13 +247,34 @@ public class MsgSender {
                     } else {
                         m.invoke(service, contact, ids);
                     }
-                    Log.i(TAG, "[MsgSender] 撤回指令提交: " + msgId);
                     return;
                 }
             }
-        } catch (Throwable t) {
-            Log.e(TAG, "[MsgSender] 撤回异常: ", t);
-        }
+        } catch (Throwable ignored) {}
+    }
+
+    public static void sendRawElements(Contact contact, ArrayList<?> elements) {
+        IKernelMsgService service = getMsgService();
+        if (service == null || contact == null || elements == null || elements.isEmpty()) return;
+        try {
+            long msgId = 0L;
+            try {
+                Method genMethod = service.getClass().getMethod("generateMsgUniqueId", int.class, long.class);
+                msgId = (Long) genMethod.invoke(service, contact.getChatType(), System.currentTimeMillis());
+            } catch (Throwable ignored) {}
+
+            for (Method m : service.getClass().getMethods()) {
+                if ("sendMsg".equals(m.getName()) && m.getParameterTypes().length >= 4) {
+                    m.setAccessible(true);
+                    if (m.getParameterTypes().length == 5) {
+                        m.invoke(service, msgId, contact, elements, new HashMap(), null);
+                    } else {
+                        m.invoke(service, msgId, contact, elements, new HashMap());
+                    }
+                    return;
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static ArrayList<MsgElement> buildElements(Contact contact, String content) {
@@ -156,8 +285,7 @@ public class MsgSender {
 
         while (matcher.find()) {
             if (matcher.start() > lastIndex) {
-                String plain = content.substring(lastIndex, matcher.start());
-                elements.add(createTextElement(plain));
+                elements.add(createTextElement(content.substring(lastIndex, matcher.start())));
             }
             String tag = matcher.group(1);
             String val = matcher.group(2);
@@ -174,7 +302,6 @@ public class MsgSender {
         if (lastIndex < content.length()) {
             elements.add(createTextElement(content.substring(lastIndex)));
         }
-
         return elements;
     }
 
@@ -230,6 +357,36 @@ public class MsgSender {
             }
         } catch (Throwable ignored) {}
         return null;
+    }
+
+    private static int estimatePttDurationMs(String path) {
+        try {
+            File file = new File(path);
+            if (!file.exists() || file.length() <= 0) return 1000;
+            byte[] bytes = new byte[(int) Math.min(file.length(), 65536)];
+            try (FileInputStream fis = new FileInputStream(file)) {
+                fis.read(bytes);
+            }
+            int offset = 0;
+            if (bytes.length >= 10 && new String(bytes, 1, 9, StandardCharsets.US_ASCII).equals("#!SILK_V3")) {
+                offset = 10;
+            } else if (bytes.length >= 9 && new String(bytes, 0, 9, StandardCharsets.US_ASCII).equals("#!SILK_V3")) {
+                offset = 9;
+            } else {
+                return 1000;
+            }
+            int frames = 0;
+            while (offset + 2 <= bytes.length) {
+                int frameLen = (bytes[offset] & 0xFF) | ((bytes[offset + 1] & 0xFF) << 8);
+                offset += 2;
+                if (frameLen <= 0 || frameLen > 4096 || offset + frameLen > bytes.length) break;
+                offset += frameLen;
+                frames++;
+            }
+            return frames > 0 ? frames * 20 : 1000;
+        } catch (Throwable t) {
+            return 1000;
+        }
     }
 
     public static Contact makeContact(String target, int chatType) {

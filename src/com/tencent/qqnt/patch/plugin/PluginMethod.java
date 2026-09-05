@@ -5,12 +5,12 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.EditText;
 import android.widget.Toast;
 
 import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
+import me.yxp.qfun.plugin.bean.FriendInfo;
+import me.yxp.qfun.plugin.bean.GroupInfo;
+import me.yxp.qfun.plugin.bean.MemberInfo;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -18,15 +18,12 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
 public class PluginMethod {
 
@@ -50,182 +47,8 @@ public class PluginMethod {
         this.mCompiler = compiler;
     }
 
-    /**
-     * ★ 语言引擎级通用回退调度器（修复版）：
-     * 自动拦截 BeanShell 跨线程/Lambda 逃逸的 Drawable/LayoutParams 垃圾对象，
-     * 穿透抓取当前弹窗真实的 EditText 输入内容进行对齐！
-     */
-    public Object invoke(String methodName, Object[] args) throws Exception {
-        if (mCompiler == null || mCompiler.getInterpreter() == null) {
-            throw new NoSuchMethodException("Command not found: " + methodName);
-        }
-
-        Object interp = mCompiler.getInterpreter();
-        Method getNameSpaceM = interp.getClass().getMethod("getNameSpace");
-        Object ns = getNameSpaceM.invoke(interp);
-        Method getMethodsM = ns.getClass().getMethod("getMethods");
-        Object[] methods = (Object[]) getMethodsM.invoke(ns);
-
-        int argCount = (args != null) ? args.length : 0;
-        Object targetMethod = null;
-        Class<?>[] targetParamTypes = null;
-
-        if (methods != null) {
-            for (Object m : methods) {
-                Method getNameM = m.getClass().getMethod("getName");
-                String mName = (String) getNameM.invoke(m);
-                if (methodName.equals(mName)) {
-                    Method getParamTypesM = m.getClass().getMethod("getParameterTypes");
-                    Class<?>[] pts = (Class<?>[]) getParamTypesM.invoke(m);
-                    if (pts.length == argCount) {
-                        targetMethod = m;
-                        targetParamTypes = pts;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (targetMethod == null) {
-            throw new NoSuchMethodException("Command not found: " + methodName + "(" + argCount + " args)");
-        }
-
-        Object[] adaptedArgs = new Object[argCount];
-
-        for (int i = 0; i < argCount; i++) {
-            Object orig = args[i];
-            Class<?> expected = targetParamTypes[i];
-
-            if (orig == null) {
-                adaptedArgs[i] = (expected == String.class) ? "" : null;
-            } else if (expected.isInstance(orig)) {
-                adaptedArgs[i] = orig;
-            } else if (expected == String.class) {
-                adaptedArgs[i] = String.valueOf(orig);
-            } else if (expected == int.class || expected == Integer.class) {
-                try {
-                    adaptedArgs[i] = Integer.parseInt(orig.toString().trim());
-                } catch (Throwable t) {
-                    adaptedArgs[i] = 0;
-                }
-            } else if (expected == long.class || expected == Long.class) {
-                try {
-                    adaptedArgs[i] = Long.parseLong(orig.toString().trim());
-                } catch (Throwable t) {
-                    adaptedArgs[i] = 0L;
-                }
-            } else {
-                adaptedArgs[i] = orig;
-            }
-        }
-
-        Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, interp.getClass());
-        return invokeM.invoke(targetMethod, adaptedArgs, interp);
-    }
-
-    /**
-     * 判断传入的是否是由于 BeanShell 闭包丢失而逃逸进来的 UI 控件/布局对象
-     */
-    private boolean isJunkObject(Object obj) {
-        if (obj == null) return true;
-        if (obj instanceof android.graphics.drawable.Drawable) return true;
-        if (obj instanceof android.view.ViewGroup.LayoutParams) return true;
-        if (obj instanceof android.view.View) return true;
-        if (obj instanceof String) {
-            String s = (String) obj;
-            // 典型内存地址特征：xxx@bd88301
-            if (s.contains("@") && (s.startsWith("android.") || s.startsWith("com.tencent.") || s.startsWith("java."))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 穿透查找：优先从 Android WindowManager / Activity 顶层 View 树提取所有 EditText 文本
-     */
-    private List<String> extractInputsFromCurrentUI(Object ns, Object interp) {
-        List<String> list = new ArrayList<>();
-
-        // 途径 A: 扫描当前最新的 Window (即刚才点击提交的 Dialog 视图)
-        try {
-            Class<?> wmgClass = Class.forName("android.view.WindowManagerGlobal");
-            Object wmg = wmgClass.getMethod("getInstance").invoke(null);
-            Field viewsField = wmgClass.getDeclaredField("mViews");
-            viewsField.setAccessible(true);
-            Object viewsObj = viewsField.get(wmg);
-
-            if (viewsObj instanceof List) {
-                List<?> views = (List<?>) viewsObj;
-                // 倒序遍历，最新弹出的 Dialog 在最末尾
-                for (int i = views.size() - 1; i >= 0; i--) {
-                    Object v = views.get(i);
-                    if (v instanceof View) {
-                        List<String> currentDialogInputs = new ArrayList<>();
-                        findEditTexts((View) v, currentDialogInputs);
-                        if (!currentDialogInputs.isEmpty()) {
-                            list.addAll(currentDialogInputs);
-                            return list;
-                        }
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-
-        // 途径 B: 从当前顶层 Activity 的 DecorView 扫描
-        try {
-            Activity act = FloatingBallManager.resolveCurrentActivity();
-            if (act != null && act.getWindow() != null) {
-                View decor = act.getWindow().getDecorView();
-                findEditTexts(decor, list);
-                if (!list.isEmpty()) return list;
-            }
-        } catch (Throwable ignored) {}
-
-        // 途径 C: 回退扫描 BeanShell 全局作用域
-        if (ns != null && interp != null) {
-            try {
-                Method getVarNamesM = ns.getClass().getMethod("getVariableNames");
-                Method getM = ns.getClass().getMethod("get", String.class, interp.getClass());
-                String[] names = (String[]) getVarNamesM.invoke(ns);
-                if (names != null) {
-                    for (String name : names) {
-                        try {
-                            Object obj = getM.invoke(ns, name, interp);
-                            if (obj instanceof EditText) {
-                                EditText et = (EditText) obj;
-                                if (et.getText() != null) {
-                                    list.add(et.getText().toString().trim());
-                                }
-                            }
-                        } catch (Throwable ignored) {}
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
-
-        return list;
-    }
-
-    private void findEditTexts(View view, List<String> result) {
-        if (view == null) return;
-        if (view instanceof EditText) {
-            EditText et = (EditText) view;
-            if (et.getText() != null) {
-                result.add(et.getText().toString().trim());
-            }
-        } else if (view instanceof ViewGroup) {
-            ViewGroup vg = (ViewGroup) view;
-            int count = vg.getChildCount();
-            for (int i = 0; i < count; i++) {
-                findEditTexts(vg.getChildAt(i), result);
-            }
-        }
-    }
-
-    public void log(Object msg) {
-        log("log.txt", msg);
-    }
+    // ================= 基础日志与 Toast =================
+    public void log(Object msg) { log("log.txt", msg); }
 
     public synchronized void log(String fileName, Object msg) {
         try {
@@ -264,29 +87,24 @@ public class PluginMethod {
     }
 
     public void loadJava(String path) {
-        if (mCompiler != null) {
-            mCompiler.loadJava(path);
-        }
+        if (mCompiler != null) mCompiler.loadJava(path);
     }
 
     public void addItem(String name, String callbackMethod) {
-        if (mCompiler != null) {
-            mCompiler.addMenuItem(name, callbackMethod);
-        }
+        if (mCompiler != null) mCompiler.addMenuItem(name, callbackMethod);
     }
 
     public Activity getNowActivity() {
         return com.tencent.qqnt.patch.AppContext.getCurrentActivity();
     }
 
+    // ================= 消息发送全家桶 =================
     public void sendMsg(String peerUin, String msg, int chatType) {
         MsgSender.sendMsg(peerUin, msg, chatType);
     }
 
     public void sendMsg(Object contactObj, String msg) {
-        if (contactObj instanceof Contact) {
-            MsgSender.sendMsg((Contact) contactObj, msg);
-        }
+        if (contactObj instanceof Contact) MsgSender.sendMsg((Contact) contactObj, msg);
     }
 
     public void sendPic(String peerUin, String path, int chatType) {
@@ -297,24 +115,94 @@ public class PluginMethod {
         sendMsg(contactObj, "[pic=" + path + "]");
     }
 
+    public void sendPtt(String peerUin, String path, int chatType) {
+        MsgSender.sendPtt(peerUin, path, chatType, 0);
+    }
+
+    public void sendPtt(String peerUin, String path, int chatType, int durationMs) {
+        MsgSender.sendPtt(peerUin, path, chatType, durationMs);
+    }
+
+    public void sendPtt(Object contactObj, String path) {
+        if (contactObj instanceof Contact) MsgSender.sendPtt((Contact) contactObj, path, 0);
+    }
+
+    public void sendPtt(Object contactObj, String path, int durationMs) {
+        if (contactObj instanceof Contact) MsgSender.sendPtt((Contact) contactObj, path, durationMs);
+    }
+
+    public void sendReplyMsg(String peerUin, long replyMsgId, String msg, int chatType) {
+        MsgSender.sendReplyMsg(peerUin, replyMsgId, msg, chatType);
+    }
+
+    public void sendReplyMsg(Object contactObj, long replyMsgId, String msg) {
+        if (contactObj instanceof Contact) MsgSender.sendReplyMsg((Contact) contactObj, replyMsgId, msg);
+    }
+
+    public void sendCard(String peerUin, String json, int chatType) {
+        MsgSender.sendCard(peerUin, json, chatType);
+    }
+
+    public void sendCard(Object contactObj, String json) {
+        if (contactObj instanceof Contact) MsgSender.sendCard((Contact) contactObj, json);
+    }
+
+    public void sendVideo(String peerUin, String path, int chatType) {
+        MsgSender.sendVideo(peerUin, path, chatType);
+    }
+
+    public void sendVideo(Object contactObj, String path) {
+        if (contactObj instanceof Contact) MsgSender.sendVideo((Contact) contactObj, path);
+    }
+
+    public void sendFile(String peerUin, String path, int chatType) {
+        MsgSender.sendFile(peerUin, path, chatType);
+    }
+
+    public void sendFile(Object contactObj, String path) {
+        if (contactObj instanceof Contact) MsgSender.sendFile((Contact) contactObj, path);
+    }
+
+    public void sendPai(String toUin, String peerUin, int chatType) {
+        MsgSender.sendPai(toUin, peerUin, chatType);
+    }
+
     public void recallMsg(int chatType, String peerUin, long msgId) {
         MsgSender.recall(chatType, peerUin, msgId);
     }
 
     public void recallMsg(Object contactObj, long msgId) {
-        if (contactObj instanceof Contact) {
-            MsgSender.recall((Contact) contactObj, msgId);
-        }
+        if (contactObj instanceof Contact) MsgSender.recall((Contact) contactObj, msgId);
     }
 
-    public String getUidFromUin(String uin) {
-        return MsgSender.getUidFromUin(uin);
-    }
+    public String getUidFromUin(String uin) { return MsgSender.getUidFromUin(uin); }
+    public String getUinFromUid(String uid) { return MsgSender.getUinFromUid(uid); }
 
-    public String getUinFromUid(String uid) {
-        return MsgSender.getUinFromUid(uid);
-    }
+    // ================= QFun 群管与群信息接口 =================
+    public List<GroupInfo> getGroupList() { return TroopHelper.getGroupList(); }
+    public Object getGroupInfo(String troopUin) { return TroopHelper.getGroupInfo(troopUin); }
+    public void shutUp(String troopUin, String memberUin, long seconds) { TroopHelper.shutUp(troopUin, memberUin, seconds); }
+    public void shutUpAll(String troopUin, boolean enable) { TroopHelper.shutUpAll(troopUin, enable); }
+    public void kickGroup(String troopUin, String memberUin, boolean block) { TroopHelper.kickGroup(troopUin, memberUin, block); }
+    public void changeMemberName(String troopUin, String memberUin, String newCard) { TroopHelper.changeMemberName(troopUin, memberUin, newCard); }
+    public void setGroupAdmin(String troopUin, String memberUin, boolean enable) { TroopHelper.setGroupAdmin(troopUin, memberUin, enable); }
+    public void clockIn(String troopUin) { TroopHelper.clockIn(troopUin); }
 
+    // ================= QFun 好友与点赞接口 =================
+    public List<FriendInfo> getAllFriend() { return FriendHelper.getAllFriend(); }
+    public boolean isFriend(String uin) { return FriendHelper.isFriend(uin); }
+    public void sendZan(String uin, int count) { FriendHelper.sendZan(uin, count); }
+
+    // ================= QFun Token / Cookie 接口 =================
+    public String getRealSkey() { return CookieHelper.getRealSkey(); }
+    public String getSkey() { return CookieHelper.getSkey(); }
+    public String getStweb() { return CookieHelper.getStweb(); }
+    public String getPskey(String domain) { return CookieHelper.getPskey(domain); }
+    public String getPt4Token(String domain) { return CookieHelper.getPt4Token(domain); }
+    public long getBkn(String key) { return CookieHelper.getBkn(key); }
+    public String getGTK(String domain) { return CookieHelper.getGTK(domain); }
+
+    // ================= 数据持久化 =================
     public synchronized void putString(String configName, String key, String value) {
         try {
             org.json.JSONObject json = readConfigFile(configName);

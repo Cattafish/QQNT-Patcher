@@ -59,7 +59,6 @@ public class FloatingBallManager {
         if (sRegistered) return;
         sRegistered = true;
         AppContext.init(context);
-        PLog.d(TAG, "悬浮球管理器初始化完毕");
     }
 
     public static Activity resolveCurrentActivity() {
@@ -72,16 +71,15 @@ public class FloatingBallManager {
         return !name.contains("Setting") && !name.contains("Preference") && !name.contains("Plugin") && !name.contains("Clean");
     }
 
-    /**
-     * 进入聊天会话 (AIODelegate.show)
-     */
     public static void onAIODelegateShow(Object delegate) {
         if (delegate == null) return;
         sCurrentAIODelegate = new WeakReference<>(delegate);
         sInAIO = true;
 
-        // 立即从当前界面的 delegate 锁定真实群号
         refreshContactFromDelegate(delegate);
+
+        // 核心：分发 chatInterface 事件给所有正在运行的脚本
+        PluginManager.dispatchChatInterface(sActiveChatType, sActivePeerUin, sActivePeerName);
 
         sMainHandler.post(() -> {
             Activity act = resolveCurrentActivity();
@@ -92,9 +90,6 @@ public class FloatingBallManager {
         });
     }
 
-    /**
-     * 退出聊天会话 (AIODelegate.hide)
-     */
     public static void onAIODelegateHide() {
         sInAIO = false;
         sActiveChatType = 0;
@@ -105,32 +100,17 @@ public class FloatingBallManager {
         sMainHandler.post(FloatingBallManager::hideView);
     }
 
-    /**
-     * ★★★ 彻底杜绝气泡污染：气泡只管自己展示，绝不允许篡改当前打开界面的群号！★★★
-     */
-    public static void onAIOMsgItemBind(Object msgRecordObj) {
-        // 空实现：绝不让后台消息或历史消息覆盖当前打开界面的群号！
-    }
+    public static void onAIOMsgItemBind(Object msgRecordObj) {}
 
-    /**
-     * ★★★ 核心方法：直读当前打开界面的 AIODelegate 内部变量 ★★★
-     * Smali 结构：
-     *   field D: long (当前会话 peerUin / 群号)
-     *   field F: int  (当前会话 chatType: 1 私聊, 2 群聊)
-     *   field C: String (当前会话 peerId)
-     *   field E: String (当前会话群名/昵称)
-     */
     public static void refreshContactFromDelegate(Object delegate) {
         if (delegate == null) return;
         try {
             Class<?> clz = delegate.getClass();
-
             int chatType = 0;
             long peerUin = 0L;
             String peerId = "";
             String chatName = "";
 
-            // 途径 1：直接反射 AIODelegate 内部已解析好的核心字段
             try {
                 Field fD = clz.getDeclaredField("D");
                 fD.setAccessible(true);
@@ -151,7 +131,6 @@ public class FloatingBallManager {
                 if (eVal != null) chatName = eVal.toString();
             } catch (Throwable ignored) {}
 
-            // 途径 2：从 AIODelegate.d.getIntent() 中双保险提取原始启动参数
             if (peerUin == 0L || chatType == 0) {
                 try {
                     Field fContainer = clz.getDeclaredField("d");
@@ -175,7 +154,6 @@ public class FloatingBallManager {
                 } catch (Throwable ignored) {}
             }
 
-            // 赋值当前会话信息
             if (chatType != 0) {
                 sActiveChatType = chatType;
             } else {
@@ -194,20 +172,14 @@ public class FloatingBallManager {
                     sActivePeerUin = peerId;
                 }
             }
-
-            PLog.d(TAG, "精准锁定当前界面 -> cType=" + sActiveChatType + ", peerUin=" + sActivePeerUin + ", name=" + sActivePeerName);
         } catch (Throwable t) {
             PLog.e(TAG, "解析当前界面会话参数异常", t);
         }
     }
 
     private static void showView(Activity activity) {
-        if (activity == null || !ConfigManager.isFloatingBallEnabled() || !sInAIO) {
-            return;
-        }
-        if (sPopupWindow != null && sPopupWindow.isShowing()) {
-            return;
-        }
+        if (activity == null || !ConfigManager.isFloatingBallEnabled() || !sInAIO) return;
+        if (sPopupWindow != null && sPopupWindow.isShowing()) return;
 
         try {
             int size = dp2px(activity, 44f);
@@ -242,7 +214,6 @@ public class FloatingBallManager {
                     }
                 } catch (Throwable ignored) {}
             });
-
         } catch (Throwable ignored) {}
     }
 
@@ -258,7 +229,6 @@ public class FloatingBallManager {
 
     private static void setupTouchListener(Activity activity, SharedPreferences sp, int size) {
         if (sFloatBtn == null) return;
-
         sFloatBtn.setOnTouchListener(new View.OnTouchListener() {
             private float touchStartX, touchStartY;
             private int initialTouchX, initialTouchY;
@@ -278,9 +248,7 @@ public class FloatingBallManager {
                     case MotionEvent.ACTION_MOVE:
                         float dx = event.getRawX() - touchStartX;
                         float dy = event.getRawY() - touchStartY;
-                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-                            isDragging = true;
-                        }
+                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) isDragging = true;
                         if (isDragging && sPopupWindow != null) {
                             sLastX = (int) (initialTouchX + dx);
                             sLastY = (int) (initialTouchY + dy);
@@ -316,8 +284,6 @@ public class FloatingBallManager {
 
     private static void showActionMenu(Activity activity) {
         if (activity == null) return;
-
-        // ★ 点击菜单弹窗的瞬间，以当前打开界面的 delegate 为准重新核实一次！
         if (sCurrentAIODelegate != null && sCurrentAIODelegate.get() != null) {
             refreshContactFromDelegate(sCurrentAIODelegate.get());
         }
@@ -384,7 +350,6 @@ public class FloatingBallManager {
                     dialog.dismiss();
                     int cType = sActiveChatType != 0 ? sActiveChatType : 2;
                     String peerUin = sActivePeerUin;
-                    PLog.i(TAG, "执行脚本菜单动作: " + action.actionName + " -> 传递参数: cType=" + cType + ", peerUin=" + peerUin);
                     PluginManager.invokePluginMenu(action.pluginId, action.callback, cType, peerUin, action.actionName);
                 });
                 root.addView(btn, lp);
