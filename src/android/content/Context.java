@@ -17,4 +17,5 @@ public class Context {
     public File getCodeCacheDir() { return null; }
     public File[] getExternalMediaDirs() { return null; }
     public Context getApplicationContext() { return this; }
+    public Object getSystemService(String name) { return null; }
 }

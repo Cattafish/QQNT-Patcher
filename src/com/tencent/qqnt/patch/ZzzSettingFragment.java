@@ -52,6 +52,7 @@ public class ZzzSettingFragment {
             try {
                 Method setTitleMethod = fragment.getClass().getMethod("setTitle", CharSequence.class);
                 setTitleMethod.invoke(fragment, "Zzz 设置");
+            PLog.i("Settings", "打开 Zzz 原生设置中心");
             } catch (Throwable ignored) {}
 
             Object adapter = null;
@@ -66,30 +67,20 @@ public class ZzzSettingFragment {
 
             List<Object> groups = new ArrayList<>();
 
-            // 1. 核心功能
+            // 1. 核心功能 (自动从 ModuleManager 动态生成)
             List<Object> funcItems = new ArrayList<>();
-            funcItems.add(createNativeSwitchItem(
-                    cl, "消息防撤回", ConfigManager.isAntiRevokeEnabled(),
-                    (btn, checked) -> {
-                        ConfigManager.setAntiRevokeEnabled(checked);
-                        Toast.makeText(activity, "消息防撤回" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
-                    }
-            ));
-            funcItems.add(createNativeSwitchItem(
-                    cl, "闪照破解", ConfigManager.isFlashPicDecryptEnabled(),
-                    (btn, checked) -> {
-                        ConfigManager.setFlashPicDecryptEnabled(checked);
-                        Toast.makeText(activity, "闪照破解" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
-                    }
-            ));
-            funcItems.add(createNativeSwitchItem(
-                    cl, "喵喵助手", ConfigManager.isMeowEnabled(),
-                    (btn, checked) -> {
-                        ConfigManager.setMeowEnabled(checked);
-                        Toast.makeText(activity, "喵喵助手" + (checked ? " 已开启喵~" : " 已关闭"), Toast.LENGTH_SHORT).show();
-                    }
-            ));
-            funcItems.add(createNativeSwitchItem(cl, "脚本悬浮球快捷入口", ConfigManager.isFloatingBallEnabled(), (btn, checked) -> { ConfigManager.setFloatingBallEnabled(checked); com.tencent.qqnt.patch.plugin.FloatingBallManager.refreshVisibility(); Toast.makeText(activity, "悬浮球" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show(); })); groups.add(createNativeGroup(cl, "核心功能", funcItems));
+            for (IPatchModule module : ModuleManager.getModules()) {
+                if (!module.showInSettings()) continue;
+                final IPatchModule m = module;
+                funcItems.add(createNativeSwitchItem(
+                        cl, m.getName(), m.isEnabled(),
+                        (btn, checked) -> {
+                            m.setEnabled(checked);
+                            Toast.makeText(activity, m.getName() + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
+                        }
+                ));
+            }
+            groups.add(createNativeGroup(cl, "核心功能 (" + funcItems.size() + " 个模块)", funcItems));
 
             // 2. 动态脚本控制台
             List<Object> pluginItems = new ArrayList<>();
@@ -115,16 +106,13 @@ public class ZzzSettingFragment {
                             }
                     ));
 
-                    // ★ 核心特性：如果脚本注册了 addItem，直接在此处挂载动作按钮！
                     if (item.isEnabled && item.menuItems != null && !item.menuItems.isEmpty()) {
                         for (Map.Entry<String, String> entry : item.menuItems.entrySet()) {
                             final String actionName = entry.getKey();
                             final String actionCallback = entry.getValue();
                             pluginItems.add(createNativeClickableItem(
                                     cl, "  ↳ " + actionName, "打开界面",
-                                    v -> {
-                                        PluginManager.invokePluginMenu(pId, actionCallback, 2, "", actionName);
-                                    }
+                                    v -> PluginManager.invokePluginMenu(pId, actionCallback, 2, "", actionName)
                             ));
                         }
                     }
@@ -132,22 +120,26 @@ public class ZzzSettingFragment {
             }
             groups.add(createNativeGroup(cl, "动态脚本 (" + allPlugins.size() + " 个插件)", pluginItems));
 
-            // 3. 高级
-            Object itemDebug = createNativeSwitchItem(
-                    cl, "调试日志输出", ConfigManager.isDebugLogEnabled(),
+            // 3. 高级与日志监视器
+            List<Object> advancedItems = new ArrayList<>();
+            advancedItems.add(createNativeSwitchItem(
+                    cl, "调试日志输出 (Logcat)", ConfigManager.isDebugLogEnabled(),
                     (btn, checked) -> {
                         ConfigManager.setDebugLogEnabled(checked);
                         Toast.makeText(activity, "调试日志" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
                     }
-            );
-            groups.add(createNativeGroup(cl, "高级", Collections.singletonList(itemDebug)));
+            ));
+            // ★ 新增：应用内免电脑日志监视器
+            advancedItems.add(createNativeClickableItem(
+                    cl, "实时运行日志", "查看 (" + PLog.getBufferCount() + "条)",
+                    v -> PLog.showLogDialog(activity)
+            ));
+            groups.add(createNativeGroup(cl, "高级与调试", advancedItems));
 
             // 4. 关于
             List<Object> aboutItems = new ArrayList<>();
             aboutItems.add(createNativeTextItem(cl, "当前版本", ConfigManager.VERSION));
-            aboutItems.add(createNativeUpdateItem(cl, "检查更新", ConfigManager.hasNewVersion(), v -> {
-                UpdateHelper.checkUpdate(activity);
-            }));
+            aboutItems.add(createNativeUpdateItem(cl, "检查更新", ConfigManager.hasNewVersion(), v -> UpdateHelper.checkUpdate(activity)));
             aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", v -> {
                 try {
                     Intent tgIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.TG_CHANNEL_URL));

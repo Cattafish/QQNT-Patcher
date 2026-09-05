@@ -1,7 +1,6 @@
 package com.tencent.qqnt.patch.plugin;
 
 import android.app.Activity;
-import android.app.Application;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -10,7 +9,6 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -26,6 +24,7 @@ import android.widget.PopupWindow;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.tencent.qqnt.patch.AppContext;
 import com.tencent.qqnt.patch.ConfigManager;
 
 import java.io.InputStream;
@@ -44,7 +43,6 @@ public class FloatingBallManager {
     private static volatile boolean sRegistered = false;
     private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
 
-    private static WeakReference<Activity> sCurrentActivity = null;
     private static WeakReference<Object> sCurrentAIODelegate = null;
 
     public static volatile int sActiveChatType = 0;
@@ -60,123 +58,30 @@ public class FloatingBallManager {
     private static int sLastY = -1;
 
     public static void init(Context context) {
-        if (sRegistered || context == null) return;
+        if (sRegistered) return;
         sRegistered = true;
+        AppContext.init(context);
+        Log.i(TAG, "[FloatingBall] 接入 AppContext 初始化成功");
+    }
 
-        try {
-            Application app = (Application) context.getApplicationContext();
-            app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
-                @Override
-                public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
-                @Override
-                public void onActivityStarted(Activity activity) {}
-                @Override
-                public void onActivityResumed(Activity activity) {
-                    sCurrentActivity = new WeakReference<>(activity);
-                    Log.i(TAG, "[FloatingBall] onActivityResumed: " + activity.getClass().getSimpleName() + ", sInAIO=" + sInAIO);
-                    if (sInAIO && isAIOActivity(activity)) {
-                        showView(activity);
-                    } else {
-                        hideView();
-                    }
-                }
-                @Override
-                public void onActivityPaused(Activity activity) {
-                    Log.i(TAG, "[FloatingBall] onActivityPaused: " + activity.getClass().getSimpleName() + " -> 隐藏浮窗");
-                    hideView();
-                }
-                @Override
-                public void onActivityStopped(Activity activity) {}
-                @Override
-                public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
-                @Override
-                public void onActivityDestroyed(Activity activity) {
-                    if (sCurrentActivity != null && sCurrentActivity.get() == activity) {
-                        hideView();
-                        sCurrentActivity = null;
-                    }
-                }
-            });
-            Log.i(TAG, "[FloatingBall] 引擎初始化成功");
-        } catch (Throwable t) {
-            Log.e(TAG, "[FloatingBall] 注册异常", t);
-        }
+    public static Activity resolveCurrentActivity() {
+        return AppContext.getCurrentActivity();
     }
 
     private static boolean isAIOActivity(Activity act) {
         if (act == null) return false;
         String name = act.getClass().getName();
-        if (name.contains("Setting") || name.contains("Preference") || name.contains("Plugin") || name.contains("Clean")) {
-            return false;
-        }
-        return true;
+        return !name.contains("Setting") && !name.contains("Preference") && !name.contains("Plugin") && !name.contains("Clean");
     }
 
-    public static Activity resolveCurrentActivity() {
-        if (sCurrentActivity != null && sCurrentActivity.get() != null) {
-            Activity act = sCurrentActivity.get();
-            if (!act.isFinishing() && !act.isDestroyed()) {
-                return act;
-            }
-        }
-        try {
-            Class<?> qBaseClz = Class.forName("com.tencent.mobileqq.app.QBaseActivity");
-            Field topField = qBaseClz.getDeclaredField("sTopActivity");
-            topField.setAccessible(true);
-            Object top = topField.get(null);
-            if (top instanceof Activity) {
-                Activity act = (Activity) top;
-                sCurrentActivity = new WeakReference<>(act);
-                return act;
-            }
-        } catch (Throwable ignored) {}
-
-        try {
-            Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
-            Object activityThread = activityThreadClass.getMethod("currentActivityThread").invoke(null);
-            Field activitiesField = activityThreadClass.getDeclaredField("mActivities");
-            activitiesField.setAccessible(true);
-            Map<?, ?> activities = (Map<?, ?>) activitiesField.get(activityThread);
-            if (activities != null) {
-                for (Object record : activities.values()) {
-                    if (record == null) continue;
-                    Class<?> recordClz = record.getClass();
-                    Field pausedField = null;
-                    try {
-                        pausedField = recordClz.getDeclaredField("paused");
-                    } catch (Throwable e) {
-                        pausedField = recordClz.getDeclaredField("mPaused");
-                    }
-                    pausedField.setAccessible(true);
-                    if (!pausedField.getBoolean(record)) {
-                        Field activityField = recordClz.getDeclaredField("activity");
-                        activityField.setAccessible(true);
-                        Activity act = (Activity) activityField.get(record);
-                        if (act != null) {
-                            sCurrentActivity = new WeakReference<>(act);
-                            return act;
-                        }
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-        return null;
-    }
-
-    /**
-     * 进入聊天会话 (AIODelegate.show)
-     */
     public static void onAIODelegateShow(Object delegate) {
-        Log.i(TAG, "[FloatingBall] === 捕获进入聊天会话 (AIODelegate.show) ===");
         if (delegate == null) return;
         sCurrentAIODelegate = new WeakReference<>(delegate);
         sInAIO = true;
-
         refreshContactFromDelegate(delegate);
 
         sMainHandler.post(() -> {
             Activity act = resolveCurrentActivity();
-            Log.i(TAG, "[FloatingBall] 准备展现浮窗, Activity: " + (act != null ? act.getClass().getSimpleName() : "null"));
             if (act != null && isAIOActivity(act)) {
                 hideView();
                 showView(act);
@@ -184,9 +89,6 @@ public class FloatingBallManager {
         });
     }
 
-    /**
-     * 双保险激活：进入会话渲染消息气泡时必调
-     */
     public static void onAIOMsgItemBind(Object msgRecordObj) {
         if (msgRecordObj == null) return;
         try {
@@ -209,7 +111,6 @@ public class FloatingBallManager {
                     sActiveChatType = chatType;
                     sActivePeerUin = target;
                     sInAIO = true;
-                    Log.i(TAG, "[FloatingBall] 双保险：聊天气泡渲染激活会话 -> " + sActivePeerUin);
 
                     sMainHandler.post(() -> {
                         Activity act = resolveCurrentActivity();
@@ -222,11 +123,7 @@ public class FloatingBallManager {
         } catch (Throwable ignored) {}
     }
 
-    /**
-     * 退出聊天会话 (AIODelegate.hide)
-     */
     public static void onAIODelegateHide() {
-        Log.i(TAG, "[FloatingBall] === 捕获退出聊天会话 (AIODelegate.hide) -> 隐藏浮窗 ===");
         sInAIO = false;
         sActiveChatType = 0;
         sActivePeerUid = "";
@@ -251,7 +148,6 @@ public class FloatingBallManager {
 
             if (contact != null) {
                 String input = contact.toString();
-                Log.i(TAG, "[FloatingBall] 会话 Contact: " + input);
                 Pattern regex = Pattern.compile("(\\w+)=([^,)]*)");
                 Matcher m = regex.matcher(input);
 
@@ -285,13 +181,10 @@ public class FloatingBallManager {
                     String uin = MsgSender.getUinFromUid(peerUid);
                     sActivePeerUin = (!uin.isEmpty()) ? uin : peerUid;
                 }
-
-                Log.i(TAG, "[FloatingBall] 解析会话成功: cType=" + sActiveChatType + ", peerUin=" + sActivePeerUin);
             } else {
                 if (sActiveChatType == 0) sActiveChatType = 2;
             }
         } catch (Throwable t) {
-            Log.e(TAG, "[FloatingBall] 解析 contact 异常", t);
             if (sActiveChatType == 0) sActiveChatType = 2;
         }
     }
@@ -334,16 +227,11 @@ public class FloatingBallManager {
                 try {
                     if (sInAIO && sPopupWindow != null && !activity.isFinishing() && !activity.isDestroyed()) {
                         sPopupWindow.showAtLocation(decor, Gravity.NO_GRAVITY, sLastX, sLastY);
-                        Log.i(TAG, "[FloatingBall] 悬浮球成功显示在 Window (X=" + sLastX + ", Y=" + sLastY + ")");
                     }
-                } catch (Throwable t) {
-                    Log.e(TAG, "[FloatingBall] showAtLocation 执行异常", t);
-                }
+                } catch (Throwable ignored) {}
             });
 
-        } catch (Throwable t) {
-            Log.e(TAG, "[FloatingBall] PopupWindow 准备阶段异常", t);
-        }
+        } catch (Throwable ignored) {}
     }
 
     private static void hideView() {
@@ -351,7 +239,6 @@ public class FloatingBallManager {
             if (sPopupWindow != null) {
                 sPopupWindow.dismiss();
                 sPopupWindow = null;
-                Log.i(TAG, "[FloatingBall] 悬浮球已关闭隐藏");
             }
             sFloatBtn = null;
         } catch (Throwable ignored) {}
@@ -484,7 +371,6 @@ public class FloatingBallManager {
                     dialog.dismiss();
                     int cType = sActiveChatType != 0 ? sActiveChatType : 2;
                     String peerUin = sActivePeerUin;
-                    Log.i(TAG, "[FloatingBall] 点击菜单动作 -> 当前界面 cType=" + cType + ", peerUin=" + peerUin);
                     PluginManager.invokePluginMenu(action.pluginId, action.callback, cType, peerUin, action.actionName);
                 });
                 root.addView(btn, lp);

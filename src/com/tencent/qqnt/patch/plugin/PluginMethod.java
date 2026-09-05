@@ -276,31 +276,7 @@ public class PluginMethod {
     }
 
     public Activity getNowActivity() {
-        Activity act = FloatingBallManager.resolveCurrentActivity();
-        if (act != null) return act;
-
-        try {
-            Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
-            Object activityThread = activityThreadClass.getMethod("currentActivityThread").invoke(null);
-            Field activitiesField = activityThreadClass.getDeclaredField("mActivities");
-            activitiesField.setAccessible(true);
-            Map<?, ?> activities = (Map<?, ?>) activitiesField.get(activityThread);
-            if (activities == null) return null;
-
-            for (Object record : activities.values()) {
-                if (record == null) continue;
-                Class<?> recordClz = record.getClass();
-                Field pausedField = recordClz.getDeclaredField("paused");
-                pausedField.setAccessible(true);
-                boolean paused = pausedField.getBoolean(record);
-                if (!paused) {
-                    Field activityField = recordClz.getDeclaredField("activity");
-                    activityField.setAccessible(true);
-                    return (Activity) activityField.get(record);
-                }
-            }
-        } catch (Throwable ignored) {}
-        return null;
+        return com.tencent.qqnt.patch.AppContext.getCurrentActivity();
     }
 
     public void sendMsg(String peerUin, String msg, int chatType) {

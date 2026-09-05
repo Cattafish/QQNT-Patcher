@@ -1,4 +1,4 @@
-package com.tencent.qqnt.patch;
+package com.tencent.qqnt.patch.modules;
 
 import android.util.Log;
 import com.tencent.mobileqq.qroute.QRoute;
@@ -7,6 +7,7 @@ import com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession;
 import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
 import com.tencent.qqnt.kernelpublic.nativeinterface.JsonGrayElement;
 import com.tencent.qqnt.ntrelation.friendsinfo.api.IFriendsInfoService;
+import com.tencent.qqnt.patch.IPatchModule;
 import com.tencent.relation.common.api.IRelationNTUinAndUidApi;
 
 import java.io.ByteArrayOutputStream;
@@ -15,7 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
-public class AntiRevokeHelper {
+public class AntiRevokeModule implements IPatchModule {
 
     private static final String TAG = "QQ_DEBUG";
     private static final String CMD_MSG_PUSH = "trpc.msg.olpush.OlPushService.MsgPush";
@@ -24,11 +25,10 @@ public class AntiRevokeHelper {
     private static final long BUSI_ID_C2C = 2021L;
     private static final long BUSI_ID_GROUP = 2022L;
 
-    public static boolean isAntiRevokeEnabled() {
-        return ConfigManager.isAntiRevokeEnabled();
-    }
+    @Override public String getId() { return "anti_revoke"; }
+    @Override public String getName() { return "消息防撤回"; }
 
-    private static final Set<String> revokedCache = Collections.synchronizedSet(
+    private static final Set<String> sRevokedCache = Collections.synchronizedSet(
             Collections.newSetFromMap(new LinkedHashMap<String, Boolean>(100, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
@@ -37,20 +37,9 @@ public class AntiRevokeHelper {
             })
     );
 
-    public static byte[] handleMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
-        // 冷启动更新检测与脚本引擎激活
-        ConfigManager.triggerColdStartUpdateCheck();
-
-        // ★ 绑定 session，供脚本引擎 MsgSender 发送消息使用
-        if (session != null) {
-            com.tencent.qqnt.patch.plugin.MsgSender.setSession(session);
-        }
-
+    @Override
+    public byte[] onMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
         if (cmd == null || buf == null) {
-            return buf;
-        }
-
-        if (!ConfigManager.isAntiRevokeEnabled()) {
             return buf;
         }
 
@@ -63,7 +52,7 @@ public class AntiRevokeHelper {
                         return buf;
                     }
                 } catch (Throwable t) {
-                    Log.e(TAG, "处理撤回灰条异常", t);
+                    Log.e(TAG, "[AntiRevoke] 处理撤回灰条异常", t);
                 }
                 return null;
             }
@@ -229,7 +218,7 @@ public class AntiRevokeHelper {
             if (groupCode.isEmpty()) return false;
 
             String cacheKey = "grp_" + groupCode + "_seq_" + msgSeq;
-            if (msgSeq > 0 && !revokedCache.add(cacheKey)) return false;
+            if (msgSeq > 0 && !sRevokedCache.add(cacheKey)) return false;
 
             String uin = getUin(operatorUid);
             String nickName = getUserNickName(operatorUid, uin);
@@ -259,7 +248,7 @@ public class AntiRevokeHelper {
             }
 
             String cacheKey = "c2c_" + peerUid + "_seq_" + msgSeq;
-            if (msgSeq > 0 && !revokedCache.add(cacheKey)) return false;
+            if (msgSeq > 0 && !sRevokedCache.add(cacheKey)) return false;
 
             String json = buildC2CClickableJson(msgSeq);
             Contact contact = new Contact(1, peerUid, "");

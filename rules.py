@@ -1,28 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件 (含 AIO 双保险精准感知)
+Patch 规则定义文件 (画廊寄存器动态捕获自适应 + 纯净事件总线)
 """
 
 import struct
 
 RULES = [
-    # 规则 1：防撤回核心拦截
+    # 规则 1：MSF 底层协议总线 (PatchBridge.handleMsfPush)
     {
-        "name": "防撤回核心拦截 (onMsfPush)",
+        "name": "MSF 底层协议总线",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;",
         "target_method": "onMsfPush(Ljava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V",
         "type": "REPLACE",
         "smali": """
 .method public onMsfPush(Ljava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V
     .registers 10
-
-    # === [AntiRevoke Patch] ===
-    invoke-static {p0, p1, p2}, Lcom/tencent/qqnt/patch/AntiRevokeHelper;->handleMsfPush(Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession;Ljava/lang/String;[B)[B
+    invoke-static {p0, p1, p2}, Lcom/tencent/qqnt/patch/PatchBridge;->handleMsfPush(Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession;Ljava/lang/String;[B)[B
     move-result-object p2
-
     if-nez p2, :cond_pass
     return-void
-
     :cond_pass
     iget-wide v1, p0, Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;->nativeRef:J
     move-object v0, p0
@@ -41,7 +37,6 @@ RULES = [
         "target_method": "onViewCreated(Landroid/view/View;Landroid/os/Bundle;)V",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [Zzz Native Setting Hook] ===
     move-object/16 v0, p0
     move-object/16 v1, p1
     move-object/16 v2, p2
@@ -52,126 +47,87 @@ RULES = [
     :cond_orig_general
 """
     },
-    # 规则 3：喵喵助手 (sendMsg)
+    # 规则 3：发送消息统一事件总线 (PatchBridge.handleSendMsg)
     {
-        "name": "喵喵助手 (sendMsg)",
+        "name": "发送消息统一总线 (sendMsg)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
         "target_method": "sendMsg(JLcom/tencent/qqnt/kernelpublic/nativeinterface/Contact;Ljava/util/ArrayList;Ljava/util/HashMap;Lcom/tencent/qqnt/kernel/nativeinterface/IOperateCallback;)V",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [Meow Helper Hook] ===
     move-object/16 v0, p4
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/MeowHelper;->handleSendMsg(Ljava/util/ArrayList;)V
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleSendMsg(Ljava/util/ArrayList;)V
 """
     },
-    # 规则 4：AIO 气泡构造感知与闪照解密 (只要进入会话必调，100% 触发)
+    # 规则 4：AIO 气泡数据构造统一总线 (PatchBridge.handleAIOMsgItem)
     {
-        "name": "AIO 气泡构造感知 (AIOMsgItem)",
+        "name": "AIO 气泡数据统一总线 (AIOMsgItem)",
         "target_class": "Lcom/tencent/mobileqq/aio/msg/AIOMsgItem;",
         "target_method": "<init>(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V",
         "type": "INSERT_BEFORE",
         "smali": """
-    # === [AIOMsgItem Double Check Hook] ===
-    invoke-static {p1}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
-    invoke-static {p1}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIOMsgItemBind(Ljava/lang/Object;)V
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOMsgItem(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
 """
     },
-    # 规则 5：闪照破解 (批量转换解密)
+    # 规则 5：拉取消息列表统一总线 (PatchBridge.handleRecvMsgList)
     {
-        "name": "闪照破解 (com.tencent.qqnt.msg.n.a 批量转换解密)",
+        "name": "拉取消息列表统一总线 (n.a)",
         "target_class": "Lcom/tencent/qqnt/msg/n;",
         "target_method": "a(Ljava/util/ArrayList;)Ljava/util/ArrayList;",
         "type": "INSERT_BEFORE",
         "smali": """
     move-object/16 v0, p0
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgList(Ljava/util/List;)V
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleRecvMsgList(Ljava/util/List;)V
 """
     },
-    # 规则 6：画廊大图放行 a.b
+    # 规则 6：画廊大图放行 a.b (★ 动态捕获寄存器 \1，彻底废除死板硬编码 v2)
     {
         "name": "闪照破解 (AIO 画廊大图放行 a.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
         "target_method": "b(Ljava/util/List;)Ljava/util/List;",
         "type": "REGEX_REPLACE",
-        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z(?:\s+move-result\s+\w+)?",
+        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z\s+move-result\s+([vp]\d+)",
         "smali": """
-    const/4 v2, 0x0"""
+    const/4 \\1, 0x0"""
     },
-    # 规则 7：画廊大图放行 b.b
+    # 规则 7：画廊大图放行 b.b (★ 动态捕获寄存器 \1，彻底废除死板硬编码 v6)
     {
         "name": "闪照破解 (AIO 画廊大图放行 b.b)",
         "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
         "target_method": "b(Ljava/util/List;)Ljava/util/List;",
         "type": "REGEX_REPLACE",
-        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z(?:\s+move-result\s+\w+)?",
+        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z\s+move-result\s+([vp]\d+)",
         "smali": """
-    const/4 v6, 0x0"""
+    const/4 \\1, 0x0"""
     },
-    # 规则 8：PicElement 构造函数脱壳
+    # 规则 8：推送消息监听统一代理 (PatchBridge.wrapKernelMsgListener)
     {
-        "name": "闪照破解 (PicElement 所有构造函数脱壳)",
-        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/PicElement;",
-        "target_method": "<init>",
-        "type": "REGEX_REPLACE",
-        "regex": r"return-void(?=\s*(?:\.end\s+method|$))",
-        "smali": """
-    move-object/16 v0, p0
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handlePicElement(Lcom/tencent/qqnt/kernel/nativeinterface/PicElement;)V
-    return-void"""
-    },
-    # 规则 9：MsgRecord 构造函数脱壳
-    {
-        "name": "闪照破解 (MsgRecord 所有构造函数脱壳)",
-        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;",
-        "target_method": "<init>",
-        "type": "REGEX_REPLACE",
-        "regex": r"return-void(?=\s*(?:\.end\s+method|$))",
-        "smali": """
-    move-object/16 v0, p0
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleMsgRecord(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
-    return-void"""
-    },
-    # 规则 10：AIOElementType$f 构造函数脱壳
-    {
-        "name": "闪照破解 (AIOElementType.PicElement 构造函数脱壳)",
-        "target_class": "Lcom/tencent/qqnt/aio/msg/element/AIOElementType$f;",
-        "target_method": "<init>",
-        "type": "REGEX_REPLACE",
-        "regex": r"return-void(?=\s*(?:\.end\s+method|$))",
-        "smali": """
-    move-object/16 v0, p0
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/FlashPicHelper;->handleAIOElementPic(Ljava/lang/Object;)V
-    return-void"""
-    },
-    # 规则 11：addKernelMsgListener 实时推送代理
-    {
-        "name": "闪照破解 (addKernelMsgListener 实时推送代理)",
+        "name": "推送监听统一代理 (addKernelMsgListener)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
         "target_method": "addKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)J",
         "type": "INSERT_BEFORE",
         "smali": """
-    invoke-static {p1}, Lcom/tencent/qqnt/patch/FlashPicHelper;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
     move-result-object p1
 """
     },
-    # 规则 12：AIO 会话开启监听 (AIODelegate.show)
+    # 规则 9：AIO 会话开启总线 (PatchBridge.handleAIOShow)
     {
-        "name": "AIO 会话开启监听 (AIODelegate.show)",
+        "name": "AIO 会话开启总线 (AIODelegate.show)",
         "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
         "target_method": "show()V",
         "type": "INSERT_BEFORE",
         "smali": """
-    invoke-static {p0}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIODelegateShow(Ljava/lang/Object;)V
+    invoke-static {p0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOShow(Ljava/lang/Object;)V
 """
     },
-    # 规则 13：AIO 会话关闭监听 (AIODelegate.hide)
+    # 规则 10：AIO 会话关闭总线 (PatchBridge.handleAIOHide)
     {
-        "name": "AIO 会话关闭监听 (AIODelegate.hide)",
+        "name": "AIO 会话关闭总线 (AIODelegate.hide)",
         "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
         "target_method": "hide()V",
         "type": "INSERT_BEFORE",
         "smali": """
-    invoke-static {}, Lcom/tencent/qqnt/patch/plugin/FloatingBallManager;->onAIODelegateHide()V
+    invoke-static {}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOHide()V
 """
     }
 ]
