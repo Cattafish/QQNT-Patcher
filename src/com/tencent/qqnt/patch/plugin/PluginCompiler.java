@@ -1,6 +1,8 @@
 package com.tencent.qqnt.patch.plugin;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.util.Log;
 import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
 
@@ -14,12 +16,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class PluginCompiler {
 
@@ -60,10 +58,9 @@ public class PluginCompiler {
             if (!f.exists()) return;
             long t0 = System.currentTimeMillis();
             String rawCode = readFileContent(f);
-            String safeCode = universalSanitizeScript(rawCode);
 
             Method evalMethod = mInterpreter.getClass().getMethod("eval", String.class);
-            evalMethod.invoke(mInterpreter, safeCode);
+            evalMethod.invoke(mInterpreter, rawCode);
 
             syncNewClassLoaders(f.getName().replace(".java", ""));
             Log.i(TAG, "[PluginCompiler] 成功载入关联文件: " + f.getName() + " (耗时 " + (System.currentTimeMillis() - t0) + "ms)");
@@ -112,7 +109,7 @@ public class PluginCompiler {
         if (!scriptFile.exists() || !scriptFile.isFile() || mBshClassLoader == null) return false;
 
         long tStart = System.currentTimeMillis();
-        Log.i(TAG, "[PluginCompiler] 开始编译启动脚本: " + mPluginId);
+        Log.i(TAG, "[PluginCompiler] 开始启动脚本: " + mPluginId);
 
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(mFixClassLoader);
@@ -125,7 +122,20 @@ public class PluginCompiler {
             setClassLoaderMethod.invoke(mInterpreter, mFixClassLoader);
 
             Method setMethod = interpClass.getMethod("set", String.class, Object.class);
-            setMethod.invoke(mInterpreter, "context", mContext);
+
+            // ★ 核心增强：智能代理 context，解决 Android 11+ 对 ApplicationContext 获取 WindowManager 报错的问题
+            Context smartContext = new ContextWrapper(mContext) {
+                @Override
+                public Object getSystemService(String name) {
+                    if ("window".equals(name) || (Context.class.getName().equals(name))) {
+                        Activity act = com.tencent.qqnt.patch.AppContext.getCurrentActivity();
+                        if (act != null) return act.getSystemService(Context.WINDOW_SERVICE);
+                    }
+                    return super.getSystemService(name);
+                }
+            };
+
+            setMethod.invoke(mInterpreter, "context", smartContext);
             setMethod.invoke(mInterpreter, "classLoader", mFixClassLoader);
             setMethod.invoke(mInterpreter, "pluginPath", mPluginDir.getAbsolutePath());
             setMethod.invoke(mInterpreter, "pluginId", mPluginId);
@@ -139,11 +149,11 @@ public class PluginCompiler {
                 Method getNameSpaceMethod = interpClass.getMethod("getNameSpace");
                 Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
 
-                // 将 PluginMethod 的全部方法注册到 BeanShell 命名空间，让脚本可以直接无前缀调用
                 Class<?> bshMethodClz = mBshClassLoader.loadClass("bsh.BshMethod");
                 Constructor<?> bshMethodCtor = bshMethodClz.getConstructor(Method.class, Object.class);
                 Method setMethodM = nameSpace.getClass().getMethod("setMethod", bshMethodClz);
 
+                // 导出 PluginMethod 的全部成员供脚本无前缀直接调用
                 for (Method m : PluginMethod.class.getDeclaredMethods()) {
                     if (Modifier.isPublic(m.getModifiers()) && !m.getName().contains("$")) {
                         try {
@@ -157,11 +167,11 @@ public class PluginCompiler {
                 importObjectMethod.invoke(nameSpace, api);
             } catch (Throwable ignored) {}
 
+            // ★ 直接直传原生 Java 代码执行，不再进行任何破坏性的文本变量重命名
             String rawCode = readFileContent(scriptFile);
-            String safeCode = universalSanitizeScript(rawCode);
 
             Method evalMethod = interpClass.getMethod("eval", String.class);
-            evalMethod.invoke(mInterpreter, safeCode);
+            evalMethod.invoke(mInterpreter, rawCode);
 
             mIsRunning = true;
             Log.i(TAG, "[PluginCompiler] 脚本 " + mPluginId + " 启动成功，耗时: " + (System.currentTimeMillis() - tStart) + "ms");
@@ -174,78 +184,6 @@ public class PluginCompiler {
         } finally {
             Thread.currentThread().setContextClassLoader(originalTCCL);
         }
-    }
-
-    private String universalSanitizeScript(String source) {
-        if (source == null || source.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder();
-        int len = source.length();
-        int cursor = 0;
-        Pattern methodHeader = Pattern.compile("(?:public|protected|private|static|final|synchronized|\\s)*\\s+([A-Za-z0-9_<>.\\[\\]]+)\\s+([A-Za-z0-9_]+)\\s*\\(([^)]*)\\)\\s*\\{");
-
-        while (cursor < len) {
-            Matcher m = methodHeader.matcher(source);
-            if (!m.find(cursor)) {
-                sb.append(source.substring(cursor));
-                break;
-            }
-
-            int bodyStart = m.end();
-            sb.append(source, cursor, bodyStart);
-
-            int braceDepth = 1;
-            int scanIdx = bodyStart;
-            boolean inString = false;
-            char quoteChar = 0;
-
-            while (scanIdx < len && braceDepth > 0) {
-                char c = source.charAt(scanIdx);
-                if (inString) {
-                    if (c == '\\') scanIdx++;
-                    else if (c == quoteChar) inString = false;
-                } else {
-                    if (c == '"' || c == '\'') { inString = true; quoteChar = c; }
-                    else if (c == '{') braceDepth++;
-                    else if (c == '}') braceDepth--;
-                }
-                scanIdx++;
-            }
-
-            if (braceDepth == 0) {
-                String returnType = m.group(1).trim();
-                String methodName = m.group(2).trim();
-                String methodBody = source.substring(bodyStart, scanIdx - 1);
-                if (!"void".equals(returnType)) {
-                    methodBody = isolateAnyLocalVariables(methodBody, methodName);
-                }
-                sb.append(methodBody);
-                sb.append("}");
-                cursor = scanIdx;
-            } else {
-                sb.append(source.substring(bodyStart));
-                break;
-            }
-        }
-        return sb.toString();
-    }
-
-    private String isolateAnyLocalVariables(String body, String methodName) {
-        if (body == null || body.isEmpty()) return body;
-        Pattern declPattern = Pattern.compile("\\b([A-Za-z0-9_$.]+)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=");
-        Matcher m = declPattern.matcher(body);
-        List<String> detectedVars = new ArrayList<>();
-        while (m.find()) {
-            String varName = m.group(2);
-            if ("if".equals(varName) || "do".equals(varName) || "while".equals(varName) || "for".equals(varName)) continue;
-            if (!detectedVars.contains(varName)) detectedVars.add(varName);
-        }
-
-        String safeBody = body;
-        for (String var : detectedVars) {
-            String isolatedName = "_bsh_" + var + "_" + Math.abs(methodName.hashCode() % 10000);
-            safeBody = safeBody.replaceAll("\\b" + var + "\\b", isolatedName);
-        }
-        return safeBody;
     }
 
     private String readFileContent(File file) {
