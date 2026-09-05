@@ -13,9 +13,12 @@ public class Intent {
 
     public Intent putExtra(String name, boolean value) { return this; }
     public Intent putExtra(String name, String value) { return this; }
+    public Intent putExtra(String name, int value) { return this; }
+    public Intent putExtra(String name, long value) { return this; }
     public boolean getBooleanExtra(String name, boolean defaultValue) { return defaultValue; }
     public String getStringExtra(String name) { return null; }
     public int getIntExtra(String name, int defaultValue) { return defaultValue; }
+    public long getLongExtra(String name, long defaultValue) { return defaultValue; }
     public boolean hasExtra(String name) { return false; }
     public Intent addFlags(int flags) { return this; }
     public Intent setClassName(String packageName, String className) { return this; }

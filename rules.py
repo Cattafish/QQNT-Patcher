@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Patch 规则定义文件 (画廊寄存器动态捕获自适应 + 纯净事件总线 + 宽寄存器防溢出)
+Patch 规则定义文件 (精准对齐寄存器映射，保障实时消息接收)
 """
 
 import struct
@@ -58,15 +58,14 @@ RULES = [
     invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleSendMsg(Ljava/util/ArrayList;)V
 """
     },
-    # 规则 4：AIO 气泡数据构造统一总线 (PatchBridge.handleAIOMsgItem)
+    # 规则 4：AIO 气泡数据构造统一总线 (★ 必须使用原版安全的 invoke-static {p1}，严禁触碰 v0 破坏 this)
     {
         "name": "AIO 气泡数据统一总线 (AIOMsgItem)",
         "target_class": "Lcom/tencent/mobileqq/aio/msg/AIOMsgItem;",
         "target_method": "<init>(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V",
         "type": "INSERT_BEFORE",
         "smali": """
-    move-object/16 v0, p1
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOMsgItem(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOMsgItem(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
 """
     },
     # 规则 5：拉取消息列表统一总线 (PatchBridge.handleRecvMsgList)
@@ -100,19 +99,18 @@ RULES = [
         "smali": """
     const/4 \\1, 0x0"""
     },
-    # 规则 8：推送消息监听统一代理 (PatchBridge.wrapKernelMsgListener)
+    # 规则 8：推送消息监听统一代理 (★ 必须使用原版安全的 invoke-static {p1}，严禁触碰 v0 破坏 nativeRef)
     {
         "name": "推送监听统一代理 (addKernelMsgListener)",
         "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
         "target_method": "addKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)J",
         "type": "INSERT_BEFORE",
         "smali": """
-    move-object/16 v0, p1
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
     move-result-object p1
 """
     },
-    # 规则 9：AIO 会话开启总线 (★ 使用 move-object/16 解决 .registers 21 导致的寄存器溢出)
+    # 规则 9：AIO 会话开启总线 (此处 p0 是 v20，唯一需要 move-object/16 的地方)
     {
         "name": "AIO 会话开启总线 (AIODelegate.show)",
         "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",

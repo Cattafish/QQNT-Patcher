@@ -3,6 +3,7 @@ package com.tencent.qqnt.patch.plugin;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -34,8 +35,6 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class FloatingBallManager {
 
@@ -49,7 +48,6 @@ public class FloatingBallManager {
     public static volatile String sActivePeerUid = "";
     public static volatile String sActivePeerUin = "";
     public static volatile String sActivePeerName = "";
-    public static volatile String sActiveGuild = "";
     public static volatile boolean sInAIO = false;
 
     private static PopupWindow sPopupWindow = null;
@@ -75,14 +73,15 @@ public class FloatingBallManager {
     }
 
     /**
-     * 唯一合法入口 1：进入聊天会话 (AIODelegate.show)
+     * 进入聊天会话 (AIODelegate.show)
      */
     public static void onAIODelegateShow(Object delegate) {
         if (delegate == null) return;
         sCurrentAIODelegate = new WeakReference<>(delegate);
         sInAIO = true;
+
+        // 立即从当前界面的 delegate 锁定真实群号
         refreshContactFromDelegate(delegate);
-        PLog.d(TAG, "打开聊天界面，准备展示悬浮球 -> peerUin=" + sActivePeerUin + ", cType=" + sActiveChatType);
 
         sMainHandler.post(() -> {
             Activity act = resolveCurrentActivity();
@@ -94,10 +93,9 @@ public class FloatingBallManager {
     }
 
     /**
-     * 唯一合法入口 2：退出聊天会话 (AIODelegate.hide)
+     * 退出聊天会话 (AIODelegate.hide)
      */
     public static void onAIODelegateHide() {
-        PLog.d(TAG, "退出聊天界面，立即隐藏悬浮球");
         sInAIO = false;
         sActiveChatType = 0;
         sActivePeerUid = "";
@@ -108,94 +106,98 @@ public class FloatingBallManager {
     }
 
     /**
-     * ★★★ 核心修复点：
-     * 绝不允许后台消息把 sInAIO 重新置为 true，绝不允许在会话外弹窗！
+     * ★★★ 彻底杜绝气泡污染：气泡只管自己展示，绝不允许篡改当前打开界面的群号！★★★
      */
     public static void onAIOMsgItemBind(Object msgRecordObj) {
-        // 如果不在聊天会话内，收到任何后台推送、消息列表刷新一律直接忽略！
-        if (!sInAIO) {
-            return;
-        }
-
-        // 仅在会话已经打开的前提下，用于校准内部目标数据，绝不调用 showView()
-        if (msgRecordObj == null) return;
-        try {
-            Class<?> clz = msgRecordObj.getClass();
-            Field fChatType = clz.getDeclaredField("chatType");
-            int chatType = fChatType.getInt(msgRecordObj);
-
-            if (chatType == 1 || chatType == 2) {
-                Field fPeerUin = clz.getDeclaredField("peerUin");
-                long pUin = fPeerUin.getLong(msgRecordObj);
-                Field fPeerUid = clz.getDeclaredField("peerUid");
-                String pUid = (String) fPeerUid.get(msgRecordObj);
-
-                String target = (pUin > 0) ? String.valueOf(pUin) : pUid;
-                if (chatType == 1 && target != null && target.startsWith("u_")) {
-                    target = MsgSender.getUinFromUid(target);
-                }
-
-                if (target != null && !target.isEmpty()) {
-                    sActiveChatType = chatType;
-                    sActivePeerUin = target;
-                }
-            }
-        } catch (Throwable ignored) {}
+        // 空实现：绝不让后台消息或历史消息覆盖当前打开界面的群号！
     }
 
+    /**
+     * ★★★ 核心方法：直读当前打开界面的 AIODelegate 内部变量 ★★★
+     * Smali 结构：
+     *   field D: long (当前会话 peerUin / 群号)
+     *   field F: int  (当前会话 chatType: 1 私聊, 2 群聊)
+     *   field C: String (当前会话 peerId)
+     *   field E: String (当前会话群名/昵称)
+     */
     public static void refreshContactFromDelegate(Object delegate) {
         if (delegate == null) return;
         try {
-            Object contact = null;
+            Class<?> clz = delegate.getClass();
+
+            int chatType = 0;
+            long peerUin = 0L;
+            String peerId = "";
+            String chatName = "";
+
+            // 途径 1：直接反射 AIODelegate 内部已解析好的核心字段
             try {
-                Method m = delegate.getClass().getMethod("getAIOContact");
-                contact = m.invoke(delegate);
-            } catch (Throwable ignored) {
-                Field f = delegate.getClass().getDeclaredField("aioContact");
-                f.setAccessible(true);
-                contact = f.get(delegate);
-            }
+                Field fD = clz.getDeclaredField("D");
+                fD.setAccessible(true);
+                peerUin = fD.getLong(delegate);
 
-            if (contact != null) {
-                String input = contact.toString();
-                Pattern regex = Pattern.compile("(\\w+)=([^,)]*)");
-                Matcher m = regex.matcher(input);
+                Field fF = clz.getDeclaredField("F");
+                fF.setAccessible(true);
+                chatType = fF.getInt(delegate);
 
-                int chatType = 0;
-                String peerUid = "";
-                String guild = "";
-                String peerName = "";
+                Field fC = clz.getDeclaredField("C");
+                fC.setAccessible(true);
+                Object cVal = fC.get(delegate);
+                if (cVal != null) peerId = cVal.toString();
 
-                while (m.find()) {
-                    String key = m.group(1);
-                    String val = m.group(2).replace("'", "").trim();
-                    if ("chatType".equals(key)) {
-                        try { chatType = Integer.parseInt(val); } catch (Throwable ignored) {}
-                    } else if ("peerUid".equals(key)) {
-                        peerUid = val;
-                    } else if ("guildId".equals(key)) {
-                        guild = val;
-                    } else if ("nick".equals(key)) {
-                        peerName = val;
+                Field fE = clz.getDeclaredField("E");
+                fE.setAccessible(true);
+                Object eVal = fE.get(delegate);
+                if (eVal != null) chatName = eVal.toString();
+            } catch (Throwable ignored) {}
+
+            // 途径 2：从 AIODelegate.d.getIntent() 中双保险提取原始启动参数
+            if (peerUin == 0L || chatType == 0) {
+                try {
+                    Field fContainer = clz.getDeclaredField("d");
+                    fContainer.setAccessible(true);
+                    Object container = fContainer.get(delegate);
+                    if (container != null) {
+                        Method mGetIntent = container.getClass().getMethod("getIntent");
+                        Intent intent = (Intent) mGetIntent.invoke(container);
+                        if (intent != null) {
+                            long iUin = intent.getLongExtra("key_peerUin", 0L);
+                            int iType = intent.getIntExtra("key_chat_type", 0);
+                            String iId = intent.getStringExtra("key_peerId");
+                            String iName = intent.getStringExtra("key_chat_name");
+
+                            if (iUin > 0L) peerUin = iUin;
+                            if (iType != 0) chatType = iType;
+                            if (iId != null && !iId.isEmpty()) peerId = iId;
+                            if (iName != null && !iName.isEmpty()) chatName = iName;
+                        }
                     }
-                }
-
-                sActiveChatType = (chatType != 0) ? chatType : 2;
-                sActivePeerUid = peerUid;
-                sActiveGuild = guild;
-                sActivePeerName = peerName;
-
-                if (sActiveChatType == 2) {
-                    sActivePeerUin = peerUid;
-                } else {
-                    String uin = MsgSender.getUinFromUid(peerUid);
-                    sActivePeerUin = (!uin.isEmpty()) ? uin : peerUid;
-                }
-            } else {
-                if (sActiveChatType == 0) sActiveChatType = 2;
+                } catch (Throwable ignored) {}
             }
+
+            // 赋值当前会话信息
+            if (chatType != 0) {
+                sActiveChatType = chatType;
+            } else {
+                sActiveChatType = (peerUin > 0L && String.valueOf(peerUin).length() >= 6) ? 2 : 1;
+            }
+
+            sActivePeerUid = peerId;
+            sActivePeerName = chatName;
+
+            if (peerUin > 0L) {
+                sActivePeerUin = String.valueOf(peerUin);
+            } else if (!peerId.isEmpty()) {
+                if (sActiveChatType == 1 && peerId.startsWith("u_")) {
+                    sActivePeerUin = MsgSender.getUinFromUid(peerId);
+                } else {
+                    sActivePeerUin = peerId;
+                }
+            }
+
+            PLog.d(TAG, "精准锁定当前界面 -> cType=" + sActiveChatType + ", peerUin=" + sActivePeerUin + ", name=" + sActivePeerName);
         } catch (Throwable t) {
-            if (sActiveChatType == 0) sActiveChatType = 2;
+            PLog.e(TAG, "解析当前界面会话参数异常", t);
         }
     }
 
@@ -315,6 +317,7 @@ public class FloatingBallManager {
     private static void showActionMenu(Activity activity) {
         if (activity == null) return;
 
+        // ★ 点击菜单弹窗的瞬间，以当前打开界面的 delegate 为准重新核实一次！
         if (sCurrentAIODelegate != null && sCurrentAIODelegate.get() != null) {
             refreshContactFromDelegate(sCurrentAIODelegate.get());
         }
@@ -381,6 +384,7 @@ public class FloatingBallManager {
                     dialog.dismiss();
                     int cType = sActiveChatType != 0 ? sActiveChatType : 2;
                     String peerUin = sActivePeerUin;
+                    PLog.i(TAG, "执行脚本菜单动作: " + action.actionName + " -> 传递参数: cType=" + cType + ", peerUin=" + peerUin);
                     PluginManager.invokePluginMenu(action.pluginId, action.callback, cType, peerUin, action.actionName);
                 });
                 root.addView(btn, lp);

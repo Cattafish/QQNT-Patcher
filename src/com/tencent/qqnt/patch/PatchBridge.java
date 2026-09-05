@@ -5,6 +5,7 @@ import com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession;
 import com.tencent.qqnt.kernel.nativeinterface.MsgElement;
 import com.tencent.qqnt.kernel.nativeinterface.MsgRecord;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
@@ -51,6 +52,8 @@ public class PatchBridge {
         if (original == null) return null;
         try {
             ClassLoader cl = original.getClass().getClassLoader();
+            if (cl == null) cl = PatchBridge.class.getClassLoader();
+
             return (IKernelMsgListener) Proxy.newProxyInstance(
                     cl,
                     new Class<?>[]{IKernelMsgListener.class},
@@ -66,7 +69,12 @@ public class PatchBridge {
                                 }
                             }
                         } catch (Throwable ignored) {}
-                        return method.invoke(original, args);
+
+                        try {
+                            return method.invoke(original, args);
+                        } catch (InvocationTargetException ite) {
+                            throw ite.getTargetException();
+                        }
                     }
             );
         } catch (Throwable t) {
