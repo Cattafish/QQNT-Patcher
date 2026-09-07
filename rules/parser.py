@@ -64,6 +64,14 @@ class FastDexParser:
             if self.get_type_str(i) == target_type: return i
         return -1
 
+    def find_class_index(self, target_type_str: str) -> int:
+        """根据全限定类名，返回其在 class_defs 中的索引"""
+        for i in range(self.class_defs_size):
+            c_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
+            if self.get_type_str(c_idx) == target_type_str:
+                return i
+        return -1
+
     def find_setting_config_info(self):
         target_super = "Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;"
         matching_proto_indices = {p for p in range(self.proto_ids_size) if self.get_proto_desc(p) == "(Landroid/content/Context;)Ljava/util/List;"}
@@ -208,7 +216,7 @@ class FastDexParser:
         if t_id == -1: return []
 
         matched_classes = []
-        t_pat = struct.pack('<H', t_id) # Type IDs are capped at 65535 by DEX spec, safe to pack H
+        t_pat = struct.pack('<H', t_id)
 
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
