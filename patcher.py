@@ -175,6 +175,61 @@ def dump_batch_tasks(dex_tasks, batch_file):
                 f.write(r['smali'].strip() + "\n")
                 f.write("---SMALI_END---\n")
 
+def patch_native_so(input_apk, work_dir):
+    """
+    [模块 01] Native 底层查签热补丁 (libcodecwrapperV2.so)
+    动态定位:
+      查找 mov w23, 1 (0x37008052) 且其后紧随 cbz w23 的签名校验跳转
+    原位替换为:
+      mov w23, 0 (0x17008052)
+    """
+    patched_files = []
+    target_entries = [
+        "lib/arm64-v8a/libcodecwrapperV2.so"
+    ]
+
+    with zipfile.ZipFile(input_apk, 'r') as zf:
+        namelist = zf.namelist()
+        for entry in target_entries:
+            if entry in namelist:
+                raw_bytes = bytearray(zf.read(entry))
+                patched = False
+
+                # 寻找 AArch64 指令: mov w23, #1 (52 80 00 37)
+                pos = 0
+                while True:
+                    idx = raw_bytes.find(b"\x37\x00\x80\x52", pos)
+                    if idx == -1:
+                        break
+                    
+                    # 检查其前后 32 字节内是否有 cbz w23 (0x...b5) 指令
+                    window = raw_bytes[idx : min(len(raw_bytes), idx + 32)]
+                    has_cbz = False
+                    for w_idx in range(0, len(window) - 3, 4):
+                        # cbz wt, label 编码: 00110100 ...
+                        insn = struct.unpack_from('<I', window, w_idx)[0]
+                        if (insn & 0x7F00001F) == 0x34000017: # cbz w23
+                            has_cbz = True
+                            break
+
+                    if has_cbz:
+                        raw_bytes[idx : idx + 4] = b"\x17\x00\x80\x52"
+                        patched = True
+                        log("OK", f"-> Native SO 查签拦截成功 (特征对齐): {entry} @ 0x{idx:X}")
+                        break
+
+                    pos = idx + 4
+
+                if patched:
+                    out_path = os.path.join(work_dir, entry)
+                    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                    with open(out_path, "wb") as f:
+                        f.write(raw_bytes)
+                    patched_files.append((out_path, entry))
+                else:
+                    log("WARN", f"-> 未在 {entry} 中定位到特征跳转，跳过 Native 修补")
+    return patched_files
+
 def main():
     t_start = time.time()
 
@@ -211,42 +266,12 @@ def main():
     log("TIME", f"  -> 阶段 1 耗时: {t_phase1}s")
 
     t0 = time.time()
-    log("INFO", "2. 正在扫描 Dex 分包与匹配规则...")
+    log("INFO", "2. 正在提取 Dex 并动态推导安全风控穿透规则...")
     dex_data_dict = {}
     with zipfile.ZipFile(input_apk, 'r') as zf:
         for name in zf.namelist():
             if re.match(r'^classes\d*\.dex$', name):
                 dex_data_dict[name] = zf.read(name)
-
-    # === [诊断探测：打印目标 AIODelegate 的所有声明方法] ===
-    for d_name, d_bytes in dex_data_dict.items():
-        if b'Lcom/tencent/qqnt/aio/activity/AIODelegate;' in d_bytes:
-            log("INFO", f"正在分析 AIODelegate (位于 {d_name})...")
-            p = rules.FastDexParser(d_bytes)
-            if p.valid:
-                for i in range(p.class_defs_size):
-                    c_idx = struct.unpack_from('<I', p.data, p.class_defs_off + i * 32)[0]
-                    c_name = p.get_type_str(c_idx)
-                    if c_name == "Lcom/tencent/qqnt/aio/activity/AIODelegate;":
-                        c_data_off = struct.unpack_from('<I', p.data, p.class_defs_off + i * 32 + 24)[0]
-                        if c_data_off == 0: continue
-                        pos = c_data_off
-                        s_f, pos = p.read_uleb128(pos)
-                        i_f, pos = p.read_uleb128(pos)
-                        d_m, pos = p.read_uleb128(pos)
-                        v_m, pos = p.read_uleb128(pos)
-                        for _ in range((s_f + i_f) * 2): _, pos = p.read_uleb128(pos)
-                        m_idx = 0
-                        for _ in range(d_m + v_m):
-                            diff, pos = p.read_uleb128(pos)
-                            m_idx += diff
-                            _, pos = p.read_uleb128(pos)
-                            _, pos = p.read_uleb128(pos)
-                            _, proto_idx, name_idx = struct.unpack_from('<HHI', p.data, p.method_ids_off + m_idx * 8)
-                            m_name = p.get_string(name_idx)
-                            proto_desc = p.get_proto_desc(proto_idx)
-                            if any(k in m_name.lower() for k in ["show", "hide", "contact", "aio"]):
-                                log("OK", f"  -> AIODelegate 声明方法: {m_name}{proto_desc}")
 
     def dex_index(name):
         if name == "classes.dex": return 1
@@ -258,12 +283,18 @@ def main():
     next_dex_name = f"classes{max_idx + 1}.dex"
 
     all_rules = list(rules.RULES)
+
+    # 动态推导全套安全风控绕过规则 (带严格排除黑名单)
+    dynamic_sec_rules = rules.get_dynamic_security_rules(dex_data_dict)
+    all_rules.extend(dynamic_sec_rules)
+    for r in dynamic_sec_rules:
+        log("OK", f"-> 安全穿透规则生成: [{r['name']}]")
+
+    # 动态挂载原生设置中心入口
     dyn_setting_rule = rules.get_dynamic_setting_rule_fast(dex_data_dict)
     if dyn_setting_rule:
         all_rules.append(dyn_setting_rule)
-        log("OK", f"-> 动态规则匹配: [{dyn_setting_rule['name']}]")
-    else:
-        log("WARN", "-> 未检测到设置中心特征，跳过动态设置注入")
+        log("OK", f"-> 设置入口匹配: [{dyn_setting_rule['name']}]")
 
     dex_to_rules = {}
     matched_rule_names = set()
@@ -277,20 +308,16 @@ def main():
 
     for rule in all_rules:
         if rule["name"] not in matched_rule_names:
-            log("WARN", f"-> 未命中规则: [{rule['name']}]")
-
-    if not dex_to_rules:
-        log("WARN", "未在 APK 中匹配到任何规则目标类！")
-        sys.exit(1)
+            log("WARN", f"-> 规则未命中当前包: [{rule['name']}]")
 
     for d_name, r_list in dex_to_rules.items():
-        log("INFO", f"-> 分包 [{d_name}] 命中 {len(r_list)} 条规则")
+        log("INFO", f"-> 分包 [{d_name}] 装载 {len(r_list)} 条修改规则")
 
     t_phase2 = round(time.time() - t0, 2)
     log("TIME", f"  -> 阶段 2 耗时: {t_phase2}s")
 
     t0 = time.time()
-    log("INFO", f"3. 正在处理 Dex 分包 ({len(dex_to_rules)} 个)...")
+    log("INFO", f"3. 正在执行 Dex 字节码内存 AST 重构 ({len(dex_to_rules)} 个分包)...")
     dex_tasks = []
     modified_dex_files = []
 
@@ -311,12 +338,15 @@ def main():
         cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
         run_cmd(cmd)
 
+    log("INFO", "3.1 正在扫描底层 Native SO 安全探针...")
+    patched_so_files = patch_native_so(input_apk, work_dir)
+
     del dex_data_dict
     t_phase3 = round(time.time() - t0, 2)
     log("TIME", f"  -> 阶段 3 耗时: {t_phase3}s")
 
     t0 = time.time()
-    log("INFO", "4. 正在打包 APK...")
+    log("INFO", "4. 正在打包 APK (复制原包并注入修改文件)...")
     if shutil.which("cp"):
         run_cmd(f"cp -f {shlex.quote(input_apk)} {shlex.quote(output_apk)}")
     else:
@@ -331,6 +361,13 @@ def main():
             target_in_dir = os.path.join(inject_dir, in_zip_name)
             shutil.copyfile(local_path, target_in_dir)
             zip_args.append(shlex.quote(in_zip_name))
+
+    for local_so, in_zip_so in patched_so_files:
+        if os.path.exists(local_so):
+            target_so_dir = os.path.join(inject_dir, os.path.dirname(in_zip_so))
+            os.makedirs(target_so_dir, exist_ok=True)
+            shutil.copyfile(local_so, os.path.join(inject_dir, in_zip_so))
+            zip_args.append(shlex.quote(in_zip_so))
 
     if helper_dex_path and os.path.exists(helper_dex_path):
         target_helper = os.path.join(inject_dir, next_dex_name)
