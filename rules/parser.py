@@ -66,11 +66,7 @@ class FastDexParser:
 
     def find_setting_config_info(self):
         target_super = "Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;"
-        matching_proto_indices = set()
-        for p_idx in range(self.proto_ids_size):
-            if self.get_proto_desc(p_idx) == "(Landroid/content/Context;)Ljava/util/List;":
-                matching_proto_indices.add(p_idx)
-
+        matching_proto_indices = {p for p in range(self.proto_ids_size) if self.get_proto_desc(p) == "(Landroid/content/Context;)Ljava/util/List;"}
         if not matching_proto_indices: return None, None
 
         for i in range(self.class_defs_size):
@@ -79,30 +75,14 @@ class FastDexParser:
                 class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
                 cls_name = self.get_type_str(class_idx)
                 if cls_name.startswith("Lcom/tencent/mobileqq/setting/main/"):
-                    class_data_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
-                    if class_data_off == 0: continue
-                    p = class_data_off
-                    static_fields_size, p = self.read_uleb128(p)
-                    instance_fields_size, p = self.read_uleb128(p)
-                    direct_methods_size, p = self.read_uleb128(p)
-                    virtual_methods_size, p = self.read_uleb128(p)
-
-                    for _ in range((static_fields_size + instance_fields_size) * 2):
-                        _, p = self.read_uleb128(p)
-
-                    # 1. 扫描直接方法
+                    c_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
+                    if c_off == 0: continue
+                    p = c_off
+                    s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
+                    d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
+                    for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
                     m_idx = 0
-                    for _ in range(direct_methods_size):
-                        diff, p = self.read_uleb128(p)
-                        m_idx += diff
-                        _, p = self.read_uleb128(p); _, p = self.read_uleb128(p)
-                        _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
-                        if proto_idx in matching_proto_indices:
-                            return cls_name, f"{self.get_string(name_idx)}(Landroid/content/Context;)Ljava/util/List;"
-
-                    # 2. 扫描虚方法 (★ 必须严格置零计数器，修复错位)
-                    m_idx = 0
-                    for _ in range(virtual_methods_size):
+                    for _ in range(d_m + v_m):
                         diff, p = self.read_uleb128(p)
                         m_idx += diff
                         _, p = self.read_uleb128(p); _, p = self.read_uleb128(p)
@@ -112,34 +92,29 @@ class FastDexParser:
         return None, None
 
     def find_simple_item_class(self):
-        target_str_ids = set()
-        for s_idx in range(self.string_ids_size):
-            s = self.get_string(s_idx)
-            if "SimpleItemProcessor" in s:
-                target_str_ids.add(s_idx)
-
+        target_str_ids = {s for s in range(self.string_ids_size) if "SimpleItemProcessor" in self.get_string(s)}
         if not target_str_ids: return None
 
         for i in range(self.class_defs_size):
-            class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
-            desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
-            if desc_idx in target_str_ids: return self.get_string(desc_idx)[1:-1].replace('/', '.')
-            super_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 8)[0]
-            if super_idx < self.type_ids_size:
-                super_desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + super_idx * 4)[0]
-                if super_desc_idx in target_str_ids: return self.get_string(desc_idx)[1:-1].replace('/', '.')
-            source_file_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 16)[0]
-            if source_file_idx in target_str_ids: return self.get_string(desc_idx)[1:-1].replace('/', '.')
+            c_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
+            d_idx = struct.unpack_from('<I', self.data, self.type_ids_off + c_idx * 4)[0]
+            if d_idx in target_str_ids: return self.get_string(d_idx)[1:-1].replace('/', '.')
+            s_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 8)[0]
+            if s_idx < self.type_ids_size:
+                sd_idx = struct.unpack_from('<I', self.data, self.type_ids_off + s_idx * 4)[0]
+                if sd_idx in target_str_ids: return self.get_string(d_idx)[1:-1].replace('/', '.')
+            src_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 16)[0]
+            if src_idx in target_str_ids: return self.get_string(d_idx)[1:-1].replace('/', '.')
 
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
-            class_data_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
-            if class_data_off == 0: continue
-            p = class_data_off
-            s_fields, p = self.read_uleb128(p); i_fields, p = self.read_uleb128(p)
-            d_methods, p = self.read_uleb128(p); v_methods, p = self.read_uleb128(p)
-            for _ in range((s_fields + i_fields) * 2): _, p = self.read_uleb128(p)
-            for _ in range(d_methods + v_methods):
+            c_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
+            if c_off == 0: continue
+            p = c_off
+            s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
+            d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
+            for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
+            for _ in range(d_m + v_m):
                 _, p = self.read_uleb128(p); _, p = self.read_uleb128(p)
                 code_off, p = self.read_uleb128(p)
                 if code_off != 0 and code_off < len(self.data):
@@ -148,18 +123,18 @@ class FastDexParser:
                     for k in range(insns_size):
                         if insns_start + k * 2 + 4 > len(self.data): break
                         opcode = self.data[insns_start + k * 2]
-                        if opcode == 0x1A or opcode == 0x1B:
-                            ref_str_idx = struct.unpack_from('<H', self.data, insns_start + k * 2 + 2)[0]
-                            if ref_str_idx in target_str_ids:
-                                desc_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
-                                return self.get_string(desc_idx)[1:-1].replace('/', '.')
+                        if opcode in (0x1A, 0x1B):
+                            ref_idx = struct.unpack_from('<H', self.data, insns_start + k * 2 + 2)[0]
+                            if ref_idx in target_str_ids:
+                                d_idx = struct.unpack_from('<I', self.data, self.type_ids_off + class_idx * 4)[0]
+                                return self.get_string(d_idx)[1:-1].replace('/', '.')
         return None
 
     def get_class_methods(self, class_idx: int):
         methods = []
-        class_data_off = struct.unpack_from('<I', self.data, self.class_defs_off + class_idx * 32 + 24)[0]
-        if class_data_off == 0: return methods
-        p = class_data_off
+        c_off = struct.unpack_from('<I', self.data, self.class_defs_off + class_idx * 32 + 24)[0]
+        if c_off == 0: return methods
+        p = c_off
         s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
         d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
         for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
@@ -184,13 +159,6 @@ class FastDexParser:
 
         return methods
 
-    def find_class_index(self, target_type_str: str) -> int:
-        for i in range(self.class_defs_size):
-            c_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
-            if self.get_type_str(c_idx) == target_type_str:
-                return i
-        return -1
-
     def find_classes_referencing_string_strictly(self, target_str: str):
         if not self.valid: return []
         s_id = self.find_string_id(target_str)
@@ -198,7 +166,9 @@ class FastDexParser:
 
         matched_classes = []
         EXCLUDE = ("/nearby/", "/fragment/", "/viewmodel/", "/ui/", "/widget/", "/adapter/", "/facetoface/", "/qcall/", "/relation/", "/share/")
-        str_bytes_16 = struct.pack('<H', s_id)
+        
+        # 兼容超大 DEX 中巨型字符串索引保护
+        str_bytes_16 = struct.pack('<H', s_id) if s_id <= 65535 else None
         str_bytes_32 = struct.pack('<I', s_id)
 
         for i in range(self.class_defs_size):
@@ -220,7 +190,7 @@ class FastDexParser:
                     while k < len_insns - 1:
                         op = insns[k]
                         if op == 0x1A and k + 4 <= len_insns:
-                            if insns[k + 2 : k + 4] == str_bytes_16:
+                            if str_bytes_16 and insns[k + 2 : k + 4] == str_bytes_16:
                                 found = True; break
                             k += 4; continue
                         elif op == 0x1B and k + 6 <= len_insns:
@@ -238,7 +208,7 @@ class FastDexParser:
         if t_id == -1: return []
 
         matched_classes = []
-        t_pat = struct.pack('<H', t_id)
+        t_pat = struct.pack('<H', t_id) # Type IDs are capped at 65535 by DEX spec, safe to pack H
 
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
@@ -255,7 +225,8 @@ class FastDexParser:
                     insns_size = struct.unpack_from('<I', self.data, code_off + 12)[0]
                     insns = self.data[code_off + 16: code_off + 16 + insns_size * 2]
                     k = 0
-                    while k < len(insns) - 3:
+                    len_insns = len(insns)
+                    while k < len_insns - 3:
                         op = insns[k]
                         if (op in (0x1F, 0x20, 0x22)) and insns[k + 2 : k + 4] == t_pat:
                             found = True
