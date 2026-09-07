@@ -65,12 +65,42 @@ class FastDexParser:
         return -1
 
     def find_class_index(self, target_type_str: str) -> int:
-        """根据全限定类名，返回其在 class_defs 中的索引"""
         for i in range(self.class_defs_size):
             c_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
             if self.get_type_str(c_idx) == target_type_str:
                 return i
         return -1
+
+    def get_class_methods(self, class_idx: int):
+        methods = []
+        c_off = struct.unpack_from('<I', self.data, self.class_defs_off + class_idx * 32 + 24)[0]
+        if c_off == 0: return methods
+        p = c_off
+        s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
+        d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
+        for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
+
+        # 严格分离直接方法
+        m_idx = 0
+        for _ in range(d_m):
+            diff, p = self.read_uleb128(p)
+            m_idx += diff
+            _, p = self.read_uleb128(p)
+            code_off, p = self.read_uleb128(p)
+            _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
+            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), False, code_off))
+
+        # 严格分离虚方法（m_idx 必须置零重算）
+        m_idx = 0
+        for _ in range(v_m):
+            diff, p = self.read_uleb128(p)
+            m_idx += diff
+            _, p = self.read_uleb128(p)
+            code_off, p = self.read_uleb128(p)
+            _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
+            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), True, code_off))
+
+        return methods
 
     def find_setting_config_info(self):
         target_super = "Lcom/tencent/mobileqq/setting/processor/SettingConfigProvider;"
@@ -83,20 +113,10 @@ class FastDexParser:
                 class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
                 cls_name = self.get_type_str(class_idx)
                 if cls_name.startswith("Lcom/tencent/mobileqq/setting/main/"):
-                    c_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
-                    if c_off == 0: continue
-                    p = c_off
-                    s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
-                    d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
-                    for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
-                    m_idx = 0
-                    for _ in range(d_m + v_m):
-                        diff, p = self.read_uleb128(p)
-                        m_idx += diff
-                        _, p = self.read_uleb128(p); _, p = self.read_uleb128(p)
-                        _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
-                        if proto_idx in matching_proto_indices:
-                            return cls_name, f"{self.get_string(name_idx)}(Landroid/content/Context;)Ljava/util/List;"
+                    # 采用原版安全逻辑：复用稳定的 get_class_methods
+                    for m_name, proto_desc, _, _ in self.get_class_methods(i):
+                        if proto_desc == "(Landroid/content/Context;)Ljava/util/List;":
+                            return cls_name, f"{m_name}(Landroid/content/Context;)Ljava/util/List;"
         return None, None
 
     def find_simple_item_class(self):
@@ -122,6 +142,7 @@ class FastDexParser:
             s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
             d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
             for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
+            # 这里只需读取 code_off，不需要解析 m_idx，所以合并循环完全没问题
             for _ in range(d_m + v_m):
                 _, p = self.read_uleb128(p); _, p = self.read_uleb128(p)
                 code_off, p = self.read_uleb128(p)
@@ -138,35 +159,6 @@ class FastDexParser:
                                 return self.get_string(d_idx)[1:-1].replace('/', '.')
         return None
 
-    def get_class_methods(self, class_idx: int):
-        methods = []
-        c_off = struct.unpack_from('<I', self.data, self.class_defs_off + class_idx * 32 + 24)[0]
-        if c_off == 0: return methods
-        p = c_off
-        s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
-        d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
-        for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
-
-        m_idx = 0
-        for _ in range(d_m):
-            diff, p = self.read_uleb128(p)
-            m_idx += diff
-            _, p = self.read_uleb128(p)
-            code_off, p = self.read_uleb128(p)
-            _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
-            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), False, code_off))
-
-        m_idx = 0
-        for _ in range(v_m):
-            diff, p = self.read_uleb128(p)
-            m_idx += diff
-            _, p = self.read_uleb128(p)
-            code_off, p = self.read_uleb128(p)
-            _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
-            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), True, code_off))
-
-        return methods
-
     def find_classes_referencing_string_strictly(self, target_str: str):
         if not self.valid: return []
         s_id = self.find_string_id(target_str)
@@ -174,8 +166,6 @@ class FastDexParser:
 
         matched_classes = []
         EXCLUDE = ("/nearby/", "/fragment/", "/viewmodel/", "/ui/", "/widget/", "/adapter/", "/facetoface/", "/qcall/", "/relation/", "/share/")
-        
-        # 兼容超大 DEX 中巨型字符串索引保护
         str_bytes_16 = struct.pack('<H', s_id) if s_id <= 65535 else None
         str_bytes_32 = struct.pack('<I', s_id)
 
