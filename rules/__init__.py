@@ -5,15 +5,13 @@ from .base_rules import BASE_RULES
 from .security_rules import build_security_rules
 from .parser import FastDexParser
 
-# 对外暴露 patcher.py 需要的基础规则列表
 RULES = list(BASE_RULES)
 
-def get_dynamic_security_rules(dex_data_dict):
-    """提取全套动态安全穿透规则"""
-    return build_security_rules(dex_data_dict)
+def get_dynamic_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
+    """提取全套动态安全穿透规则 (支持动态回填官方指纹)"""
+    return build_security_rules(dex_data_dict, orig_apk_md5=orig_apk_md5, orig_sig_md5=orig_sig_md5)
 
 def get_dynamic_setting_rule_fast(dex_data_dict):
-    """动态探测并生成设置中心挂载规则"""
     config_class, target_method, item_class = None, None, None
     for _, dex_bytes in dex_data_dict.items():
         if not (config_class and target_method) and b'SettingConfigProvider' in dex_bytes:

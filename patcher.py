@@ -10,6 +10,7 @@ import re
 import shlex
 import struct
 import time
+import hashlib
 import rules
 
 TOOLS_DIR = os.path.abspath("./tools")
@@ -62,7 +63,7 @@ def run_cmd(cmd, cwd=None):
     return ret.stdout.decode('utf-8', errors='ignore')
 
 def run_cmd_stream(cmd, cwd=None):
-    """★ 实时流式执行器：逐行刷新终端，告别假死等待"""
+    """实时流式执行器：逐行刷新终端，实时查看进度"""
     p = subprocess.Popen(
         cmd,
         shell=True,
@@ -88,6 +89,7 @@ def run_cmd_stream(cmd, cwd=None):
     return p.returncode
 
 def ensure_smali_jars():
+    """依赖检查：只要文件不存在或小于等于 1KB，直接 ERROR 并退出"""
     missing_jars = []
     for name, path in REQUIRED_JARS:
         if not os.path.exists(path):
@@ -108,6 +110,39 @@ def ensure_fixed_keystore():
     if not os.path.exists(FIXED_KEYSTORE):
         log("INFO", "正在初始化固定签名证书 (仅首次生成)...")
         run_cmd(f"keytool -genkey -v -keystore {shlex.quote(FIXED_KEYSTORE)} -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname 'CN=Android Debug,O=Android,C=US'")
+
+def extract_original_apk_metadata(input_apk):
+    """全自动提取输入官方原版 APK 的全量 MD5 和证书 MD5 指纹"""
+    log("INFO", "0. 正在提取官方原包特征指纹...")
+    
+    # 1. 计算文件全量 MD5
+    h = hashlib.md5()
+    with open(input_apk, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    orig_apk_md5 = h.hexdigest().lower()
+    log("OK", f"  -> 原版 APK MD5 : \033[36m{orig_apk_md5}\033[0m")
+
+    # 2. 优先通过 apksigner 提取签名 MD5，keytool 作为备用
+    orig_sig_md5 = ""
+    try:
+        # 方式 A: 官方 Android SDK 构建工具 apksigner
+        cert_out = subprocess.getoutput(f"apksigner verify --print-certs {shlex.quote(input_apk)}")
+        m = re.search(r"certificate MD5 digest:\s*([0-9a-fA-F]{32})", cert_out)
+        if m:
+            orig_sig_md5 = m.group(1).lower()
+        else:
+            # 方式 B: keytool 兜底
+            kt_out = subprocess.getoutput(f"keytool -printcert -jarfile {shlex.quote(input_apk)}")
+            m2 = re.search(r"MD5:\s*([0-9a-fA-F:]{47})", kt_out)
+            if m2:
+                orig_sig_md5 = m2.group(1).replace(":", "").lower()
+    except Exception:
+        pass
+
+    if orig_sig_md5:
+        log("OK", f"  -> 原版 签名 MD5: \033[36m{orig_sig_md5}\033[0m")
+    return orig_apk_md5, orig_sig_md5
 
 def compile_helper_dex_incremental(work_dir):
     src_dir = "./src"
@@ -173,7 +208,6 @@ def build_dex_patcher_engine_incremental(work_dir):
     engine_bin = os.path.join(work_dir, "patcher_bin")
     engine_class = os.path.join(engine_bin, "com/tencent/qqnt/patcher/DexPatcher.class")
 
-    # 源码发生变更则重新编译 patcher 引擎
     if os.path.exists(engine_class) and os.path.getmtime(engine_class) >= os.path.getmtime(engine_src):
         return engine_bin
 
@@ -215,6 +249,7 @@ def dump_batch_tasks(dex_tasks, batch_file):
             f.write(f"DEX_OUT={dex_out}\n")
             for r in r_list:
                 f.write("===RULE_SPLIT===\n")
+                f.write(f"NAME={r.get('name', '未命名规则')}\n")
                 f.write(f"TARGET_CLASS={r['target_class']}\n")
                 f.write(f"TARGET_METHOD={r['target_method']}\n")
                 f.write(f"TYPE={r['type']}\n")
@@ -225,6 +260,7 @@ def dump_batch_tasks(dex_tasks, batch_file):
                 f.write("---SMALI_END---\n")
 
 def print_patch_details(dex_name, rule_list):
+    """打印 Patch 内容详情"""
     print(f"\n\033[1;36m{'='*25} [{dex_name}] 补丁明细 ({len(rule_list)} 项) {'='*25}\033[0m")
     for idx, r in enumerate(rule_list, 1):
         name = r.get("name", "未命名规则")
@@ -295,6 +331,7 @@ def patch_native_so(input_apk, work_dir):
 def main():
     t_start = time.time()
 
+    # 1. 启动前第一时间校验 tools 依赖
     ensure_smali_jars()
 
     args = sys.argv[1:]
@@ -313,6 +350,9 @@ def main():
     if not os.path.exists(input_apk):
         log("ERR", f"未找到输入 APK 文件: {input_apk}")
         sys.exit(1)
+
+    # 2. 自动提取官方原包哈希与签名 (用于特洛伊动态伪装)
+    orig_apk_md5, orig_sig_md5 = extract_original_apk_metadata(input_apk)
 
     work_dir = "./build_cache"
     os.makedirs(work_dir, exist_ok=True)
@@ -349,7 +389,12 @@ def main():
 
     all_rules = list(rules.RULES)
 
-    dynamic_sec_rules = rules.get_dynamic_security_rules(dex_data_dict)
+    # 动态推导并固化官方原版真指纹
+    dynamic_sec_rules = rules.get_dynamic_security_rules(
+        dex_data_dict,
+        orig_apk_md5=orig_apk_md5,
+        orig_sig_md5=orig_sig_md5
+    )
     all_rules.extend(dynamic_sec_rules)
     for r in dynamic_sec_rules:
         log("OK", f"-> 安全穿透规则生成: [{r['name']}]")
@@ -400,7 +445,7 @@ def main():
     if engine_bin:
         cp = f"{shlex.quote(engine_bin)}:{shlex.quote(GUAVA_JAR)}:{shlex.quote(DEXLIB2_JAR)}:{shlex.quote(SMALI_JAR)}:{shlex.quote(BAKSMALI_JAR)}"
         cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
-        # ★ 改为流式输出，实时刷新每个分包的完成进度
+        # 流式打印进度，彻底告别假死等待
         run_cmd_stream(cmd)
 
     log("INFO", "3.1 正在扫描底层 Native SO 安全探针...")
