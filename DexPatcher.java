@@ -15,6 +15,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -32,18 +33,32 @@ public class DexPatcher {
             List<DexTask> tasks = loadBatchTasks(batchConfigFile);
             Opcodes opcodes = Opcodes.forApi(26);
 
-            int threadCount = Math.min(tasks.size(), 3);
+            int totalTasks = tasks.size();
+            int availableCores = Runtime.getRuntime().availableProcessors();
+            int threadCount = Math.max(1, Math.min(totalTasks, availableCores));
+            
+            System.out.println("[DexPatcher] 启动多线程 AST 引擎 (待处理分包: " + totalTasks + ", 并发线程: " + threadCount + ")");
+            System.out.flush();
+
             ExecutorService executor = Executors.newFixedThreadPool(threadCount);
             List<Future<?>> futures = new ArrayList<>();
+            AtomicInteger completedCounter = new AtomicInteger(0);
 
             for (DexTask task : tasks) {
                 futures.add(executor.submit(() -> {
+                    String dexName = new File(task.dexIn).getName();
                     try {
+                        System.out.println("[DexPatcher] 正在处理: " + dexName + " (装载 " + task.rules.size() + " 条规则)...");
+                        System.out.flush();
+
                         long tTask = System.currentTimeMillis();
                         patchSingleDex(task, opcodes);
-                        System.out.println("[DexPatcher] " + new File(task.dexIn).getName() + " 处理完成，耗时: " + (System.currentTimeMillis() - tTask) + "ms");
+
+                        int cur = completedCounter.incrementAndGet();
+                        System.out.println("[DexPatcher] [" + cur + "/" + totalTasks + "] " + dexName + " 重构完成，耗时: " + (System.currentTimeMillis() - tTask) + "ms");
+                        System.out.flush();
                     } catch (Exception e) {
-                        System.err.println("[WARN] 处理 " + task.dexIn + " 异常: " + e.getMessage());
+                        System.err.println("[ERROR] 处理 " + task.dexIn + " 异常: " + e.getMessage());
                         try {
                             copyFile(new File(task.dexIn), new File(task.dexOut));
                         } catch (IOException ignored) {}
@@ -60,9 +75,10 @@ public class DexPatcher {
             }
             executor.shutdown();
 
-            System.out.println("[DexPatcher] 分包处理完成，耗时: " + (System.currentTimeMillis() - t0) + "ms");
+            System.out.println("[DexPatcher] 全部分包重构耗时: " + (System.currentTimeMillis() - t0) + "ms");
+            System.out.flush();
         } catch (Throwable t) {
-            System.err.println("[WARN] 引擎主流程捕获异常: " + t.getMessage());
+            System.err.println("[ERROR] 引擎主流程捕获异常: " + t.getMessage());
         }
     }
 
@@ -92,6 +108,7 @@ public class DexPatcher {
             if (matchedRules != null && !matchedRules.isEmpty()) {
                 try {
                     String smaliCode = disassembleClass(classDef, baksmaliOptions);
+                    smaliCode = smaliCode.replace("\r\n", "\n");
                     for (PatchRule r : matchedRules) {
                         smaliCode = applyRule(smaliCode, r);
                     }
@@ -189,8 +206,6 @@ public class DexPatcher {
             StringBuffer sb = new StringBuffer();
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
-
-                // 安全注入：严禁修改 .locals 4，否则会破坏 p0 映射导致 Smali 汇编崩溃回滚
                 Matcher headerMatcher = Pattern.compile("(\\.registers\\s+\\d+|\\.locals\\s+\\d+)").matcher(mBody);
                 if (headerMatcher.find()) {
                     int idx = headerMatcher.end();

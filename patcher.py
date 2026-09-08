@@ -24,6 +24,16 @@ FIXED_KEYSTORE = os.path.join(TOOLS_DIR, "debug.keystore")
 
 JAVA_OPTS = "-Xms256m -Xmx768m -XX:+UseParallelGC"
 
+REQUIRED_JARS = [
+    ("baksmali.jar", BAKSMALI_JAR),
+    ("smali.jar", SMALI_JAR),
+    ("dexlib2.jar", DEXLIB2_JAR),
+    ("guava.jar", GUAVA_JAR),
+    ("bsh.jar", BSH_JAR),
+    ("dx.jar", DX_JAR),
+    ("protobuf.jar", PROTOBUF_JAR)
+]
+
 def log(tag, msg):
     colors = {
         "INFO": "\033[1;34m[INFO]\033[0m",
@@ -42,17 +52,56 @@ def run_cmd(cmd, cwd=None):
         for line in err_msg.split("\n"):
             if "[WARN]" in line:
                 log("WARN", line)
+            elif "[ERROR]" in line or "Exception" in line:
+                log("ERR", line)
     if ret.returncode != 0:
-        log("WARN", f"命令执行异常: {cmd}")
-        if err_msg: log("WARN", err_msg)
+        log("ERR", f"命令执行失败 (Exit code {ret.returncode}): {cmd}")
+        if err_msg: log("ERR", err_msg)
         if out_msg: log("WARN", out_msg)
         return ""
     return ret.stdout.decode('utf-8', errors='ignore')
 
+def run_cmd_stream(cmd, cwd=None):
+    """★ 实时流式执行器：逐行刷新终端，告别假死等待"""
+    p = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=cwd,
+        universal_newlines=True,
+        bufsize=1
+    )
+    for line in p.stdout:
+        line_str = line.strip()
+        if not line_str:
+            continue
+        if "[WARN]" in line_str:
+            log("WARN", line_str)
+        elif "[ERROR]" in line_str:
+            log("ERR", line_str)
+        elif "[DexPatcher]" in line_str:
+            print(f"\033[1;32m[*] {line_str}\033[0m")
+        else:
+            print(f"    {line_str}")
+    p.wait()
+    return p.returncode
+
 def ensure_smali_jars():
-    required = [BAKSMALI_JAR, SMALI_JAR, DEXLIB2_JAR, GUAVA_JAR, BSH_JAR, DX_JAR, PROTOBUF_JAR]
-    if not all(os.path.exists(f) and os.path.getsize(f) > 50000 for f in required):
-        log("WARN", "未检测到完整的 tools 依赖 (请检查 baksmali/smali/dexlib2/guava/bsh/dx/protobuf.jar)！")
+    missing_jars = []
+    for name, path in REQUIRED_JARS:
+        if not os.path.exists(path):
+            missing_jars.append(f"{name} (文件不存在)")
+        elif os.path.getsize(path) <= 1024:
+            missing_jars.append(f"{name} (文件小于等于 1KB: {os.path.getsize(path)} 字节)")
+
+    if missing_jars:
+        log("ERR", "=" * 60)
+        log("ERR", "缺少必要的 tools 依赖 Jar 包，无法继续构建：")
+        for item in missing_jars:
+            log("ERR", f"  -> tools/{item}")
+        log("ERR", "=" * 60)
+        sys.exit(1)
 
 def ensure_fixed_keystore():
     os.makedirs(TOOLS_DIR, exist_ok=True)
@@ -116,15 +165,15 @@ def compile_bsh_to_asset_dex(work_dir):
     return None
 
 def build_dex_patcher_engine_incremental(work_dir):
-    ensure_smali_jars()
     engine_src = "./DexPatcher.java"
     if not os.path.exists(engine_src):
-        log("WARN", "未找到 DexPatcher.java！")
-        return None
+        log("ERR", "未找到 DexPatcher.java！")
+        sys.exit(1)
 
     engine_bin = os.path.join(work_dir, "patcher_bin")
     engine_class = os.path.join(engine_bin, "com/tencent/qqnt/patcher/DexPatcher.class")
 
+    # 源码发生变更则重新编译 patcher 引擎
     if os.path.exists(engine_class) and os.path.getmtime(engine_class) >= os.path.getmtime(engine_src):
         return engine_bin
 
@@ -175,18 +224,32 @@ def dump_batch_tasks(dex_tasks, batch_file):
                 f.write(r['smali'].strip() + "\n")
                 f.write("---SMALI_END---\n")
 
+def print_patch_details(dex_name, rule_list):
+    print(f"\n\033[1;36m{'='*25} [{dex_name}] 补丁明细 ({len(rule_list)} 项) {'='*25}\033[0m")
+    for idx, r in enumerate(rule_list, 1):
+        name = r.get("name", "未命名规则")
+        target_cls = r.get("target_class", "")
+        target_m = r.get("target_method", "")
+        p_type = r.get("type", "")
+
+        print(f"\033[1;33m[{idx:02d}] {name}\033[0m")
+        print(f"  ├─ 目标类: \033[32m{target_cls}\033[0m")
+        print(f"  ├─ 目标方法: \033[35m{target_m}\033[0m")
+        print(f"  ├─ 修补类型: \033[36m{p_type}\033[0m")
+
+        if p_type == "REGEX_REPLACE" and "regex" in r:
+            print(f"  ├─ 匹配正则: \033[90m{r['regex']}\033[0m")
+            print("  └─ 替换内容:")
+        else:
+            print("  └─ 注入 Smali 代码:")
+
+        for sl in r.get("smali", "").strip().split("\n"):
+            print(f"     \033[90m│\033[0m {sl}")
+        print()
+
 def patch_native_so(input_apk, work_dir):
-    """
-    [模块 01] Native 底层查签热补丁 (libcodecwrapperV2.so)
-    动态定位:
-      查找 mov w23, 1 (0x37008052) 且其后紧随 cbz w23 的签名校验跳转
-    原位替换为:
-      mov w23, 0 (0x17008052)
-    """
     patched_files = []
-    target_entries = [
-        "lib/arm64-v8a/libcodecwrapperV2.so"
-    ]
+    target_entries = ["lib/arm64-v8a/libcodecwrapperV2.so"]
 
     with zipfile.ZipFile(input_apk, 'r') as zf:
         namelist = zf.namelist()
@@ -195,20 +258,17 @@ def patch_native_so(input_apk, work_dir):
                 raw_bytes = bytearray(zf.read(entry))
                 patched = False
 
-                # 寻找 AArch64 指令: mov w23, #1 (52 80 00 37)
                 pos = 0
                 while True:
                     idx = raw_bytes.find(b"\x37\x00\x80\x52", pos)
                     if idx == -1:
                         break
-                    
-                    # 检查其前后 32 字节内是否有 cbz w23 (0x...b5) 指令
+
                     window = raw_bytes[idx : min(len(raw_bytes), idx + 32)]
                     has_cbz = False
                     for w_idx in range(0, len(window) - 3, 4):
-                        # cbz wt, label 编码: 00110100 ...
                         insn = struct.unpack_from('<I', window, w_idx)[0]
-                        if (insn & 0x7F00001F) == 0x34000017: # cbz w23
+                        if (insn & 0x7F00001F) == 0x34000017:
                             has_cbz = True
                             break
 
@@ -216,6 +276,8 @@ def patch_native_so(input_apk, work_dir):
                         raw_bytes[idx : idx + 4] = b"\x17\x00\x80\x52"
                         patched = True
                         log("OK", f"-> Native SO 查签拦截成功 (特征对齐): {entry} @ 0x{idx:X}")
+                        print(f"   \033[31m[-] 原指令: 37 00 80 52 (mov w23, #1)\033[0m")
+                        print(f"   \033[32m[+] 新指令: 17 00 80 52 (mov w23, #0)\033[0m")
                         break
 
                     pos = idx + 4
@@ -233,8 +295,11 @@ def patch_native_so(input_apk, work_dir):
 def main():
     t_start = time.time()
 
+    ensure_smali_jars()
+
     args = sys.argv[1:]
     no_sign = False
+
     if "--no-sign" in args:
         no_sign = True
         args.remove("--no-sign")
@@ -246,7 +311,7 @@ def main():
     output_apk = args[1] if len(args) > 1 else "QQ_Patched.apk"
 
     if not os.path.exists(input_apk):
-        log("WARN", f"未找到输入 APK 文件: {input_apk}")
+        log("ERR", f"未找到输入 APK 文件: {input_apk}")
         sys.exit(1)
 
     work_dir = "./build_cache"
@@ -284,13 +349,11 @@ def main():
 
     all_rules = list(rules.RULES)
 
-    # 动态推导全套安全风控绕过规则 (带严格排除黑名单)
     dynamic_sec_rules = rules.get_dynamic_security_rules(dex_data_dict)
     all_rules.extend(dynamic_sec_rules)
     for r in dynamic_sec_rules:
         log("OK", f"-> 安全穿透规则生成: [{r['name']}]")
 
-    # 动态挂载原生设置中心入口
     dyn_setting_rule = rules.get_dynamic_setting_rule_fast(dex_data_dict)
     if dyn_setting_rule:
         all_rules.append(dyn_setting_rule)
@@ -312,6 +375,7 @@ def main():
 
     for d_name, r_list in dex_to_rules.items():
         log("INFO", f"-> 分包 [{d_name}] 装载 {len(r_list)} 条修改规则")
+        print_patch_details(d_name, r_list)
 
     t_phase2 = round(time.time() - t0, 2)
     log("TIME", f"  -> 阶段 2 耗时: {t_phase2}s")
@@ -336,7 +400,8 @@ def main():
     if engine_bin:
         cp = f"{shlex.quote(engine_bin)}:{shlex.quote(GUAVA_JAR)}:{shlex.quote(DEXLIB2_JAR)}:{shlex.quote(SMALI_JAR)}:{shlex.quote(BAKSMALI_JAR)}"
         cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
-        run_cmd(cmd)
+        # ★ 改为流式输出，实时刷新每个分包的完成进度
+        run_cmd_stream(cmd)
 
     log("INFO", "3.1 正在扫描底层 Native SO 安全探针...")
     patched_so_files = patch_native_so(input_apk, work_dir)
