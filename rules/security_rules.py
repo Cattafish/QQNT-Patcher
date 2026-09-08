@@ -33,7 +33,7 @@ def build_security_rules(dex_data_dict):
                 if "secsrv" in proto:
                     sec_rules.append(stub_void(cls_name, f"{m_name}{proto}", regs=3, name=f"阻断完整性打击惩罚 ({cls_name}->{m_name})"))
 
-    # 4. 动态嗅探云控账号获取方法 (解决版本混淆名不同导致的未命中)
+    # 4. 动态嗅探云控账号获取方法
     united_a_cls = "Lcom/tencent/mobileqq/unitedconfig_android/api/impl/UnitedConfigManagerImpl$a;"
     for p in parsers:
         c_idx = p.find_class_index(united_a_cls)
@@ -53,7 +53,10 @@ def build_security_rules(dex_data_dict):
         stub_ret("Lcom/tencent/mobileqq/app/QQAppInterface;", "isNeedSecurityScan()Z", "const/4 v0, 0\n    return v0", name="写死关闭本地安全扫描"),
         # 内存与代码扫描休眠 (unusedcodecheck)
         stub_void("Lcom/tencent/mobileqq/startup/task/p;", "run(Landroid/content/Context;)V", regs=2, name="休眠代码防篡改扫描"),
-        stub_void("Lcom/tencent/mobileqq/perf/memory/dump/MemoryFile;", "b()V", regs=1, name="阻断内存篡改转储"),
+        
+        # ★ 关键修正 1: MemoryFile.b 原版为 private，必须声明 is_private=True 防止 invoke-direct 崩溃
+        stub_void("Lcom/tencent/mobileqq/perf/memory/dump/MemoryFile;", "b()V", is_private=True, regs=1, name="阻断内存篡改转储"),
+        
         # 灯塔硬件指纹脱敏
         stub_void("Lcom/tencent/mobileqq/statistics/QQBeaconReport;", "setBeaconPrivacyInfo()V", is_static=True, regs=1, name="阻断灯塔 Beacon 硬件指纹收集"),
         # 通道风控静默 (ChannelReport)
@@ -62,11 +65,13 @@ def build_security_rules(dex_data_dict):
         stub_void("Lcom/tencent/mobileqq/channel/ChannelReport;", "batchCommonReport(Ljava/lang/String;[Ljava/lang/String;[[Ljava/lang/String;)V", regs=4, name="阻断通道批量风控上报"),
         # 安装包物理路径脱敏
         stub_ret("Lcom/tencent/mobileqq/app/qfix/ApplicationDelegate;", "getPackageCodePath()Ljava/lang/String;", "const/4 v0, 0\n    return-object v0", name="脱敏安装包物理路径"),
-        # 极化云控更新频率 (几十年一次)
-        stub_ret("Lcom/tencent/mobileqq/unitedconfig_android/api/impl/UnitedConfigManagerImpl;", "getUpdateInterval()J", "const-wide v0, 0xc92a69c000L\n    return-wide v0", regs=3, name="极化统一云控拉取间隔"),
+
+        # ★ 关键修正 2: getUpdateInterval 原版为 private，必须声明 is_private=True 彻底修复 IncompatibleClassChangeError 闪退！
+        stub_ret("Lcom/tencent/mobileqq/unitedconfig_android/api/impl/UnitedConfigManagerImpl;", "getUpdateInterval()J", "const-wide v0, 0xc92a69c000L\n    return-wide v0", is_private=True, regs=3, name="极化统一云控拉取间隔"),
+
         # 阻断密码安全配置查询
         stub_ret("Lcom/tencent/mobileqq/app/identity/impl/SafeApiImpl;", "getUpdatePwdUrl(Ljava/lang/String;)Ljava/lang/String;", "const/4 v0, 0\n    return-object v0", regs=3, name="阻断安全中心密码配置查询"),
-        # 极化 AntEst 定时器 (排队 270 年彻底休眠)
+        # 极化 AntEst 定时器
         {
             "name": "极化 AntEst 定时器",
             "target_class": "Lcom/tencent/qqprotect/xps/core/AntEst;",
