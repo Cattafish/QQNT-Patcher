@@ -80,25 +80,23 @@ class FastDexParser:
         d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
         for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
 
-        # 严格分离直接方法
         m_idx = 0
         for _ in range(d_m):
             diff, p = self.read_uleb128(p)
             m_idx += diff
-            _, p = self.read_uleb128(p)
+            access_flags, p = self.read_uleb128(p)
             code_off, p = self.read_uleb128(p)
             _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
-            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), False, code_off))
+            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), False, code_off, access_flags))
 
-        # 严格分离虚方法（m_idx 必须置零重算）
         m_idx = 0
         for _ in range(v_m):
             diff, p = self.read_uleb128(p)
             m_idx += diff
-            _, p = self.read_uleb128(p)
+            access_flags, p = self.read_uleb128(p)
             code_off, p = self.read_uleb128(p)
             _, proto_idx, name_idx = struct.unpack_from('<HHI', self.data, self.method_ids_off + m_idx * 8)
-            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), True, code_off))
+            methods.append((self.get_string(name_idx), self.get_proto_desc(proto_idx), True, code_off, access_flags))
 
         return methods
 
@@ -113,8 +111,7 @@ class FastDexParser:
                 class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
                 cls_name = self.get_type_str(class_idx)
                 if cls_name.startswith("Lcom/tencent/mobileqq/setting/main/"):
-                    # 采用原版安全逻辑：复用稳定的 get_class_methods
-                    for m_name, proto_desc, _, _ in self.get_class_methods(i):
+                    for m_name, proto_desc, _, _, _ in self.get_class_methods(i):
                         if proto_desc == "(Landroid/content/Context;)Ljava/util/List;":
                             return cls_name, f"{m_name}(Landroid/content/Context;)Ljava/util/List;"
         return None, None
@@ -136,13 +133,12 @@ class FastDexParser:
 
         for i in range(self.class_defs_size):
             class_idx = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32)[0]
-            c_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
-            if c_off == 0: continue
-            p = c_off
+            class_data_off = struct.unpack_from('<I', self.data, self.class_defs_off + i * 32 + 24)[0]
+            if class_data_off == 0: continue
+            p = class_data_off
             s_f, p = self.read_uleb128(p); i_f, p = self.read_uleb128(p)
             d_m, p = self.read_uleb128(p); v_m, p = self.read_uleb128(p)
             for _ in range((s_f + i_f) * 2): _, p = self.read_uleb128(p)
-            # 这里只需读取 code_off，不需要解析 m_idx，所以合并循环完全没问题
             for _ in range(d_m + v_m):
                 _, p = self.read_uleb128(p); _, p = self.read_uleb128(p)
                 code_off, p = self.read_uleb128(p)
@@ -179,7 +175,7 @@ class FastDexParser:
 
             methods = self.get_class_methods(i)
             found = False
-            for _, _, _, code_off in methods:
+            for _, _, _, code_off, _ in methods:
                 if code_off != 0 and code_off + 16 < len(self.data):
                     insns_size = struct.unpack_from('<I', self.data, code_off + 12)[0]
                     insns = self.data[code_off + 16: code_off + 16 + insns_size * 2]
@@ -218,13 +214,12 @@ class FastDexParser:
 
             methods = self.get_class_methods(i)
             found = False
-            for _, _, _, code_off in methods:
+            for _, _, _, code_off, _ in methods:
                 if code_off != 0 and code_off + 16 < len(self.data):
                     insns_size = struct.unpack_from('<I', self.data, code_off + 12)[0]
                     insns = self.data[code_off + 16: code_off + 16 + insns_size * 2]
                     k = 0
-                    len_insns = len(insns)
-                    while k < len_insns - 3:
+                    while k < len(insns) - 3:
                         op = insns[k]
                         if (op in (0x1F, 0x20, 0x22)) and insns[k + 2 : k + 4] == t_pat:
                             found = True
