@@ -189,14 +189,18 @@ public class ZzzSettingFragment {
                 List<Object> aboutItems = new ArrayList<>();
                 aboutItems.add(createNativeTextItem(cl, "当前版本", ConfigManager.VERSION));
 
-                // ★ 检查更新动态判定：有新版显示“有新版本可用”+箭头+红点；无新版显示“已是最新版本”+无箭头+无红点
                 boolean hasNew = ConfigManager.hasNewVersion();
                 String updateText = hasNew ? "有新版本可用" : "已是最新版本";
                 boolean showArrow = hasNew;
 
+                // ★ 点击检查更新传入回调：一旦检测完成，立即原地无缝重载列表！
                 aboutItems.add(createNativeClickableItem(
                         cl, "检查更新", updateText, showArrow, hasNew,
-                        v -> UpdateHelper.checkUpdate(activity)
+                        v -> UpdateHelper.checkUpdate(activity, () -> {
+                            if (!activity.isFinishing() && !activity.isDestroyed()) {
+                                renderSettingsList(fragment, activity, cl, pageType);
+                            }
+                        })
                 ));
 
                 aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", true, false, v -> {
@@ -324,7 +328,7 @@ public class ZzzSettingFragment {
             }
         }
 
-        // ★ 通过 g 接口代理挂载原生红点
+        // 点亮原生红点
         if (showRedDot) {
             try {
                 Class<?> gClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.g");
@@ -367,18 +371,34 @@ public class ZzzSettingFragment {
                 c.setAccessible(true);
                 Class<?>[] paramTypes = c.getParameterTypes();
                 Object[] args = new Object[paramTypes.length];
+
                 for (int i = 0; i < paramTypes.length; i++) {
                     Class<?> pt = paramTypes[i];
                     if (i < preferredArgs.length && preferredArgs[i] != null && pt.isAssignableFrom(preferredArgs[i].getClass())) {
                         args[i] = preferredArgs[i];
                     } else if (pt == int.class || pt == Integer.class) {
-                        args[i] = (i < preferredArgs.length && preferredArgs[i] instanceof Number) ? ((Number) preferredArgs[i]).intValue() : 0;
+                        args[i] = (i < preferredArgs.length && preferredArgs[i] instanceof Number)
+                                ? ((Number) preferredArgs[i]).intValue() : 0;
                     } else if (pt == boolean.class || pt == Boolean.class) {
-                        args[i] = (i < preferredArgs.length && preferredArgs[i] instanceof Boolean) ? (Boolean) preferredArgs[i] : false;
+                        args[i] = (i < preferredArgs.length && preferredArgs[i] instanceof Boolean)
+                                ? (Boolean) preferredArgs[i] : false;
+                    } else if (pt == long.class || pt == Long.class) {
+                        args[i] = 0L;
+                    } else if (pt == float.class || pt == Float.class) {
+                        args[i] = 0.0f;
+                    } else if (pt == double.class || pt == Double.class) {
+                        args[i] = 0.0d;
+                    } else if (pt == byte.class || pt == Byte.class) {
+                        args[i] = (byte) 0;
+                    } else if (pt == short.class || pt == Short.class) {
+                        args[i] = (short) 0;
+                    } else if (pt == char.class || pt == Character.class) {
+                        args[i] = ' ';
                     } else {
                         args[i] = (i < preferredArgs.length) ? preferredArgs[i] : null;
                     }
                 }
+
                 return c.newInstance(args);
             } catch (Throwable ignored) {}
         }

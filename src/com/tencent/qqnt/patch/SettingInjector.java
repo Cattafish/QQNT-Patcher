@@ -42,12 +42,11 @@ public class SettingInjector {
             Object unitInstance = getKotlinUnitInstance(cl);
 
             // =========================================================
-            // 1. Zzz 项：挂载 zzz_icon.png，右侧显示版本号 + 有更新时亮起红点
+            // 1. Zzz 项：放大到 28dp，饱满大气
             // =========================================================
-            CharSequence finalZzzTitle = createTitleWithIcon(context, "zzz_icon.png", TITLE_ZZZ);
+            CharSequence finalZzzTitle = createTitleWithIcon(context, "zzz_icon.png", TITLE_ZZZ, 28f);
             Object zzzItem = newInstanceSmart(itemClass, new Object[]{context, 10, finalZzzTitle, 0, null});
             if (zzzItem != null) {
-                // 点击事件
                 Object clickProxy = Proxy.newProxyInstance(cl, new Class[]{func0Class}, (proxy, method, args) -> {
                     if ("invoke".equals(method.getName())) {
                         ZzzSettingFragment.startCore(context);
@@ -56,7 +55,7 @@ public class SettingInjector {
                 });
                 bindItemAction(itemClass, zzzItem, func0Class, clickProxy);
 
-                // ★ 右侧显示版本号与更新红点
+                // 右侧显示版本号与更新红点
                 bindItemView(cl, itemClass, zzzItem, func1Class, unitInstance, view -> {
                     boolean hasNew = ConfigManager.hasNewVersion();
                     QUIBadgeHelper.attachNativeBadge(view, ConfigManager.VERSION, hasNew, true);
@@ -64,12 +63,11 @@ public class SettingInjector {
             }
 
             // =========================================================
-            // 2. 动态脚本项：挂载猫猫头 script_icon.png 图标
+            // 2. 动态脚本项：微缩至 22dp，小巧精致不抢镜
             // =========================================================
-            CharSequence finalScriptTitle = createTitleWithIcon(context, "script_icon.png", TITLE_SCRIPTS);
+            CharSequence finalScriptTitle = createTitleWithIcon(context, "script_icon.png", TITLE_SCRIPTS, 22f);
             Object scriptItem = newInstanceSmart(itemClass, new Object[]{context, 11, finalScriptTitle, 0, null});
             if (scriptItem != null) {
-                // 点击事件
                 Object clickProxy = Proxy.newProxyInstance(cl, new Class[]{func0Class}, (proxy, method, args) -> {
                     if ("invoke".equals(method.getName())) {
                         ZzzSettingFragment.startPlugins(context);
@@ -118,13 +116,17 @@ public class SettingInjector {
         }
     }
 
-    private static CharSequence createTitleWithIcon(Context context, String assetName, String title) {
+    /**
+     * 精准控制图标尺寸生成标题富文本
+     * @param iconDp 指定图标显示的 dp 尺寸
+     */
+    private static CharSequence createTitleWithIcon(Context context, String assetName, String title, float iconDp) {
         try {
             InputStream is = context.getAssets().open(assetName);
             Bitmap rawBitmap = BitmapFactory.decodeStream(is);
             if (rawBitmap != null) {
                 float density = context.getResources().getDisplayMetrics().density;
-                int iconSize = (int) (24 * density + 0.5f);
+                int iconSize = (int) (iconDp * density + 0.5f);
                 Bitmap scaledBitmap = Bitmap.createScaledBitmap(rawBitmap, iconSize, iconSize, true);
                 Drawable drawable = new BitmapDrawable(context.getResources(), scaledBitmap);
                 drawable.setBounds(0, 0, iconSize, iconSize);
