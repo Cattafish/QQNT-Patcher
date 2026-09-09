@@ -17,13 +17,13 @@ public class QUIBadgeHelper {
         try {
             ViewGroup vg = (ViewGroup) root;
 
-            // 1. 设置右侧版本文字（恢复 1.0f 饱满清晰度，绝不发虚发淡）
+            // 1. 设置右侧版本文字
             TextView rightTv = findRightTextView(vg);
             if (rightTv != null) {
                 if (rightText != null && !rightText.isEmpty()) {
                     rightTv.setText(rightText);
                     rightTv.setVisibility(View.VISIBLE);
-                    rightTv.setAlpha(1.0f); // ★ 修复：纯正 100% 不透明度，完美融入原生样式
+                    rightTv.setAlpha(1.0f);
                 } else {
                     rightTv.setVisibility(View.GONE);
                 }
@@ -39,10 +39,20 @@ public class QUIBadgeHelper {
             View quiBadge = getOrCreateNativeQUIBadge(root);
             if (quiBadge != null) {
                 if (showRedDot) {
+                    // ★ 兼容无参 setRedDot() 和有参 setRedDot(boolean) 两种官方签名
+                    boolean invoked = false;
                     try {
-                        Method setRedDotMethod = quiBadge.getClass().getMethod("setRedDot");
-                        setRedDotMethod.invoke(quiBadge);
+                        Method m1 = quiBadge.getClass().getMethod("setRedDot");
+                        m1.invoke(quiBadge);
+                        invoked = true;
                     } catch (Throwable ignored) {}
+
+                    if (!invoked) {
+                        try {
+                            Method m2 = quiBadge.getClass().getMethod("setRedDot", boolean.class);
+                            m2.invoke(quiBadge, true);
+                        } catch (Throwable ignored) {}
+                    }
                     quiBadge.setVisibility(View.VISIBLE);
                 } else {
                     quiBadge.setVisibility(View.GONE);

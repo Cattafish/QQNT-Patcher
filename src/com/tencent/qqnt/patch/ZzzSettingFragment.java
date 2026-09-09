@@ -193,7 +193,7 @@ public class ZzzSettingFragment {
                 String updateText = hasNew ? "有新版本可用" : "已是最新版本";
                 boolean showArrow = hasNew;
 
-                // ★ 点击检查更新传入回调：一旦检测完成，立即原地无缝重载列表！
+                // ★ 准确传递 hasNew 作为 showRedDot 参数！
                 aboutItems.add(createNativeClickableItem(
                         cl, "检查更新", updateText, showArrow, hasNew,
                         v -> UpdateHelper.checkUpdate(activity, () -> {
@@ -309,7 +309,16 @@ public class ZzzSettingFragment {
         Object leftObj = xbdConst.newInstance(title);
 
         Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
-        Object rightObj = newInstanceSmart(xcgClass, new Object[]{rightText, showArrow, false});
+        // ★ 核心修复：第三个参数直接传 showRedDot，让 x$c$g 原生激活红点标志！
+        Object rightObj = newInstanceSmart(xcgClass, new Object[]{rightText, showArrow, showRedDot});
+
+        // ★ 再次双重确保调用 rightObj.g(showRedDot)
+        if (rightObj != null) {
+            try {
+                Method gMethod = xcgClass.getMethod("g", boolean.class);
+                gMethod.invoke(rightObj, showRedDot);
+            } catch (Throwable ignored) {}
+        }
 
         Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
         Constructor<?> xConst = xClass.getConstructor(
@@ -328,7 +337,7 @@ public class ZzzSettingFragment {
             }
         }
 
-        // 点亮原生红点
+        // ★ 挂载 View 绘制阶段监听，确保 QUIBadge 双保险点亮
         if (showRedDot) {
             try {
                 Class<?> gClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.g");
