@@ -1,0 +1,161 @@
+# -*- coding: utf-8 -*-
+"""你的原版 14 条核心扩展规则"""
+
+BASE_RULES = [
+    {
+        "name": "MSF 底层协议总线",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;",
+        "target_method": "onMsfPush(Ljava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V",
+        "type": "REPLACE",
+        "smali": """
+.method public onMsfPush(Ljava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V
+    .registers 10
+    invoke-static {p0, p1, p2}, Lcom/tencent/qqnt/patch/PatchBridge;->handleMsfPush(Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession;Ljava/lang/String;[B)[B
+    move-result-object p2
+    if-nez p2, :cond_pass
+    return-void
+    :cond_pass
+    iget-wide v1, p0, Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;->nativeRef:J
+    move-object v0, p0
+    move-object v3, p1
+    move-object v4, p2
+    move-object v5, p3
+    invoke-direct/range {v0 .. v5}, Lcom/tencent/qqnt/kernel/nativeinterface/IQQNTWrapperSession$CppProxy;->native_onMsfPush(JLjava/lang/String;[BLcom/tencent/qqnt/kernel/nativeinterface/PushExtraInfo;)V
+    return-void
+.end method
+"""
+    },
+    {
+        "name": "QQ 原生二级设置页面挂载",
+        "target_class": "Lcom/tencent/mobileqq/setting/generalSetting/GeneralSettingFragment;",
+        "target_method": "onViewCreated(Landroid/view/View;Landroid/os/Bundle;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p0
+    move-object/16 v1, p1
+    move-object/16 v2, p2
+    invoke-static {v0, v1, v2}, Lcom/tencent/qqnt/patch/ZzzSettingFragment;->onHijackViewCreated(Ljava/lang/Object;Landroid/view/View;Landroid/os/Bundle;)Z
+    move-result v0
+    if-eqz v0, :cond_orig_general
+    return-void
+    :cond_orig_general
+"""
+    },
+    {
+        "name": "发送消息统一总线 (sendMsg)",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
+        "target_method": "sendMsg(JLcom/tencent/qqnt/kernelpublic/nativeinterface/Contact;Ljava/util/ArrayList;Ljava/util/HashMap;Lcom/tencent/qqnt/kernel/nativeinterface/IOperateCallback;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p4
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleSendMsg(Ljava/util/ArrayList;)V
+"""
+    },
+    {
+        "name": "AIO 气泡数据统一总线 (AIOMsgItem)",
+        "target_class": "Lcom/tencent/mobileqq/aio/msg/AIOMsgItem;",
+        "target_method": "<init>(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOMsgItem(Lcom/tencent/qqnt/kernel/nativeinterface/MsgRecord;)V
+"""
+    },
+    {
+        "name": "拉取消息列表统一总线 (n.a)",
+        "target_class": "Lcom/tencent/qqnt/msg/n;",
+        "target_method": "a(Ljava/util/ArrayList;)Ljava/util/ArrayList;",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleRecvMsgList(Ljava/util/List;)V
+"""
+    },
+    {
+        "name": "闪照破解 (AIO 画廊大图放行 a.b)",
+        "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/a;",
+        "target_method": "b(Ljava/util/List;)Ljava/util/List;",
+        "type": "REGEX_REPLACE",
+        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z\s+move-result\s+([vp]\d+)",
+        "smali": "\n    const/4 \\1, 0x0"
+    },
+    {
+        "name": "闪照破解 (AIO 画廊大图放行 b.b)",
+        "target_class": "Lcom/tencent/qqnt/aio/gallery/fetch/b;",
+        "target_method": "b(Ljava/util/List;)Ljava/util/List;",
+        "type": "REGEX_REPLACE",
+        "regex": r"sget-object\s+\w+,\s+Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;\s+invoke-static\s+\{[^}]+\},\s+Lkotlin/jvm/internal/Intrinsics;->areEqual\(Ljava/lang/Object;Ljava/lang/Object;\)Z\s+move-result\s+([vp]\d+)",
+        "smali": "\n    const/4 \\1, 0x0"
+    },
+    {
+        "name": "推送监听统一代理 (addKernelMsgListener)",
+        "target_class": "Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgService$CppProxy;",
+        "target_method": "addKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)J",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    invoke-static {p1}, Lcom/tencent/qqnt/patch/PatchBridge;->wrapKernelMsgListener(Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;)Lcom/tencent/qqnt/kernel/nativeinterface/IKernelMsgListener;
+    move-result-object p1
+"""
+    },
+    {
+        "name": "AIO 会话开启总线 (AIODelegate.show)",
+        "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
+        "target_method": "show()Landroid/view/View;",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p0
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOShow(Ljava/lang/Object;)V
+"""
+    },
+    {
+        "name": "AIO 会话关闭总线 (AIODelegate.hide)",
+        "target_class": "Lcom/tencent/qqnt/aio/activity/AIODelegate;",
+        "target_method": "hide()V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    invoke-static {}, Lcom/tencent/qqnt/patch/PatchBridge;->handleAIOHide()V
+"""
+    },
+    {
+        "name": "AIO 气泡长按菜单挂载",
+        "target_class": "Lcom/tencent/qqnt/aio/menu/ui/QQCustomMenuExpandableLayout;",
+        "target_method": "setMenu(Lcom/tencent/qqnt/aio/menu/ui/c;Landroid/view/View;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p0
+    move-object/16 v1, p1
+    move-object/16 v2, p2
+    invoke-static {v0, v1, v2}, Lcom/tencent/qqnt/patch/plugin/AioMenuInjector;->onSetMenu(Ljava/lang/Object;Ljava/lang/Object;Landroid/view/View;)V
+"""
+    },
+    {
+        "name": "图片 RKey 自动监听",
+        "target_class": "Lmqq/app/msghandle/MsgRespHandler;",
+        "target_method": "dispatchRespMsg(Lmqq/app/MobileQQ;Lcom/tencent/mobileqq/msf/sdk/MsfMessagePair;Lcom/tencent/mobileqq/msf/sdk/MsfRespHandleUtil;Lcom/tencent/mobileqq/msf/sdk/MsfServiceSdk;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p2
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/RKeyManager;->onDispatchRespMsg(Ljava/lang/Object;)V
+"""
+    },
+    {
+        "name": "群成员退群监听",
+        "target_class": "Lcom/tencent/mobileqq/troop/api/impl/TroopMemberInfoServiceImpl;",
+        "target_method": "deleteTroopMember(Ljava/lang/String;Ljava/lang/String;Z)Z",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p1
+    move-object/16 v1, p2
+    invoke-static {v0, v1}, Lcom/tencent/qqnt/patch/plugin/PluginManager;->dispatchTroopQuit(Ljava/lang/String;Ljava/lang/String;)V
+"""
+    },
+    {
+        "name": "群成员进群监听",
+        "target_class": "Lcom/tencent/qqnt/push/processor/TroopMemberAddPushProcessor;",
+        "target_method": "a(Ljava/util/ArrayList;)V",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p1
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/TroopMemberJoinHandler;->onPushReceive(Ljava/util/ArrayList;)V
+"""
+    }
+]
