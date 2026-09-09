@@ -9,7 +9,6 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ImageSpan;
 import android.util.Log;
-import android.view.View;
 
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
@@ -17,13 +16,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 public class SettingInjector {
     private static final String TAG = "QQ_DEBUG";
-    private static final String TITLE_TEXT = "Zzz";
-    private static final boolean SHOW_ARROW = true;
+    private static final String TITLE_ZZZ = "Zzz";
+    private static final String TITLE_SCRIPTS = "动态脚本";
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static void inject(Context context, List resultList, String itemClassName) {
@@ -34,8 +32,11 @@ public class SettingInjector {
         try {
             ClassLoader cl = context.getClassLoader();
             Class<?> itemClass = cl.loadClass(itemClassName);
+            Class<?> func0Class = cl.loadClass("kotlin.jvm.functions.Function0");
+            Object unitInstance = getKotlinUnitInstance(cl);
 
-            CharSequence finalTitle = TITLE_TEXT;
+            // 1. Zzz 项（带自定义图标）
+            CharSequence finalZzzTitle = TITLE_ZZZ;
             try {
                 InputStream is = context.getAssets().open("zzz_icon.png");
                 Bitmap rawBitmap = BitmapFactory.decodeStream(is);
@@ -46,69 +47,57 @@ public class SettingInjector {
                     Drawable drawable = new BitmapDrawable(context.getResources(), scaledBitmap);
                     drawable.setBounds(0, 0, iconSize, iconSize);
 
-                    SpannableString sp = new SpannableString("   " + finalTitle);
+                    SpannableString sp = new SpannableString("   " + finalZzzTitle);
                     sp.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    finalTitle = sp;
+                    finalZzzTitle = sp;
                 }
             } catch (Throwable ignored) {}
 
-            Object[] preferredItemArgs = new Object[]{context, 10, finalTitle, 0, null};
-            Object mySettingItem = newInstanceSmart(itemClass, preferredItemArgs);
-            if (mySettingItem == null) return;
-
-            Class<?> func0Class = cl.loadClass("kotlin.jvm.functions.Function0");
-            Object unitInstance = getKotlinUnitInstance(cl);
-
-            Object clickProxy = Proxy.newProxyInstance(
-                    cl,
-                    new Class[]{func0Class},
-                    (proxy, method, args) -> {
-                        if ("invoke".equals(method.getName())) {
-                            ZzzSettingFragment.start(context);
-                        }
-                        return unitInstance;
-                    }
-            );
-
-            for (Method m : itemClass.getMethods()) {
-                Class<?>[] pts = m.getParameterTypes();
-                if (pts.length == 1 && pts[0] == func0Class && m.getReturnType() == void.class) {
-                    m.invoke(mySettingItem, clickProxy);
-                    break;
-                }
-            }
-
-            // ★ 绑定原生 View 渲染回调，挂载 [QQ 原厂 QUIBadge 红点 + 版本号]
-            Class<?> func1Class = cl.loadClass("kotlin.jvm.functions.Function1");
-            Object viewBindProxy = Proxy.newProxyInstance(
-                    cl,
-                    new Class[]{func1Class},
-                    (proxy, method, args) -> {
-                        if ("invoke".equals(method.getName()) && args != null && args.length == 1) {
-                            if (args[0] instanceof View) {
-                                boolean hasNew = ConfigManager.hasNewVersion();
-                                QUIBadgeHelper.attachNativeBadge((View) args[0], ConfigManager.VERSION, hasNew, SHOW_ARROW);
+            Object zzzItem = newInstanceSmart(itemClass, new Object[]{context, 10, finalZzzTitle, 0, null});
+            if (zzzItem != null) {
+                Object clickProxy = Proxy.newProxyInstance(
+                        cl,
+                        new Class[]{func0Class},
+                        (proxy, method, args) -> {
+                            if ("invoke".equals(method.getName())) {
+                                ZzzSettingFragment.startCore(context);
                             }
+                            return unitInstance;
                         }
-                        return unitInstance;
-                    }
-            );
-
-            for (Method m : itemClass.getMethods()) {
-                Class<?>[] pts = m.getParameterTypes();
-                if (pts.length == 1 && pts[0] == func1Class && m.getReturnType() == void.class) {
-                    m.invoke(mySettingItem, viewBindProxy);
-                    break;
-                }
+                );
+                bindItemClick(itemClass, zzzItem, func0Class, clickProxy);
             }
+
+            // 2. 动态脚本项（连在 Zzz 底部）
+            Object scriptItem = newInstanceSmart(itemClass, new Object[]{context, 11, TITLE_SCRIPTS, 0, null});
+            if (scriptItem != null) {
+                Object clickProxy = Proxy.newProxyInstance(
+                        cl,
+                        new Class[]{func0Class},
+                        (proxy, method, args) -> {
+                            if ("invoke".equals(method.getName())) {
+                                ZzzSettingFragment.startPlugins(context);
+                            }
+                            return unitInstance;
+                        }
+                );
+                bindItemClick(itemClass, scriptItem, func0Class, clickProxy);
+            }
+
+            // 3. 组合连体卡片，注意：主页面不加底部注脚（传空字符串）
+            List<Object> combinedItems = new ArrayList<>();
+            if (zzzItem != null) combinedItems.add(zzzItem);
+            if (scriptItem != null) combinedItems.add(scriptItem);
+
+            if (combinedItems.isEmpty()) return;
 
             Object firstGroup = resultList.get(0);
             Class<?> groupClass = firstGroup.getClass();
 
             Object[] preferredGroupArgs = new Object[]{
-                    Collections.singletonList(mySettingItem),
+                    combinedItems,
                     "",
-                    "",
+                    "", // 主页面底部保持干净，无注脚
                     0,
                     null
             };
@@ -124,6 +113,18 @@ public class SettingInjector {
 
         } catch (Throwable t) {
             Log.e(TAG, "设置中心注入异常", t);
+        }
+    }
+
+    private static void bindItemClick(Class<?> itemClass, Object item, Class<?> func0Class, Object proxy) {
+        for (Method m : itemClass.getMethods()) {
+            Class<?>[] pts = m.getParameterTypes();
+            if (pts.length == 1 && pts[0] == func0Class && m.getReturnType() == void.class) {
+                try {
+                    m.invoke(item, proxy);
+                } catch (Throwable ignored) {}
+                break;
+            }
         }
     }
 
