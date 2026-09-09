@@ -2,6 +2,8 @@ package com.tencent.qqnt.patch.plugin;
 
 import android.content.Context;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.tencent.qqnt.kernel.nativeinterface.MsgElement;
@@ -62,7 +64,7 @@ public class PluginManager {
         if (sInitialized || context == null) return;
         sInitialized = true;
         PLog.i("Plugin", "收到引擎初始化指令，开始载入插件...");
-        reloadAll(context);
+        reloadAll(context, null);
     }
 
     public static List<PluginItem> scanAllPlugins(Context context) {
@@ -110,32 +112,43 @@ public class PluginManager {
     }
 
     public static void setPluginActive(final Context context, final String pluginId, final boolean enabled) {
+        setPluginActive(context, pluginId, enabled, null);
+    }
+
+    // ★ 支持传入完成回调：脚本真正启动完毕/入口注入成功后，精准回调主线程
+    public static void setPluginActive(final Context context, final String pluginId, final boolean enabled, final Runnable onComplete) {
         ConfigManager.setPluginEnabled(pluginId, enabled);
         sWorkerPool.execute(() -> {
-            if (enabled) {
-                File pluginsDir = getPluginsStorageDir(context);
-                File dir = new File(pluginsDir, pluginId);
-                if (dir.isDirectory() && new File(dir, "main.java").exists()) {
-                    ClassLoader bshLoader = getOrCreateBshClassLoader(context);
-                    if (bshLoader != null) {
-                        PluginCompiler compiler = new PluginCompiler(context, dir, bshLoader);
-                        if (compiler.start()) {
-                            sLoadedPlugins.add(compiler);
-                            PLog.i("Plugin", "动态开启脚本成功: " + pluginId);
+            try {
+                if (enabled) {
+                    File pluginsDir = getPluginsStorageDir(context);
+                    File dir = new File(pluginsDir, pluginId);
+                    if (dir.isDirectory() && new File(dir, "main.java").exists()) {
+                        ClassLoader bshLoader = getOrCreateBshClassLoader(context);
+                        if (bshLoader != null) {
+                            PluginCompiler compiler = new PluginCompiler(context, dir, bshLoader);
+                            if (compiler.start()) {
+                                sLoadedPlugins.add(compiler);
+                                PLog.i("Plugin", "动态开启脚本成功: " + pluginId);
+                            } else {
+                                PLog.e("Plugin", "动态开启脚本失败: " + pluginId);
+                            }
                         } else {
-                            PLog.e("Plugin", "动态开启脚本失败: " + pluginId + "，启动过程异常");
+                            PLog.e("Plugin", "动态开启脚本失败: 引擎 ClassLoader 为空");
                         }
-                    } else {
-                        PLog.e("Plugin", "动态开启脚本失败: 引擎 ClassLoader 为空");
+                    }
+                } else {
+                    for (PluginCompiler compiler : sLoadedPlugins) {
+                        if (pluginId.equals(compiler.getPluginId())) {
+                            compiler.stop();
+                            sLoadedPlugins.remove(compiler);
+                            PLog.i("Plugin", "动态卸载脚本成功: " + pluginId);
+                        }
                     }
                 }
-            } else {
-                for (PluginCompiler compiler : sLoadedPlugins) {
-                    if (pluginId.equals(compiler.getPluginId())) {
-                        compiler.stop();
-                        sLoadedPlugins.remove(compiler);
-                        PLog.i("Plugin", "动态卸载脚本成功: " + pluginId);
-                    }
+            } finally {
+                if (onComplete != null) {
+                    new Handler(Looper.getMainLooper()).post(onComplete);
                 }
             }
         });
@@ -172,11 +185,11 @@ public class PluginManager {
         });
     }
 
-    public static void dispatchPaiYiPai(final String peerUin, final int cType, final String opUin) {
+    public static void dispatchPaiYiPai(final String peerUin, final int chatType, final String opUin) {
         if (sLoadedPlugins.isEmpty()) return;
         sWorkerPool.execute(() -> {
             for (PluginCompiler compiler : sLoadedPlugins) {
-                compiler.onPaiYiPai(peerUin, cType, opUin);
+                compiler.onPaiYiPai(peerUin, chatType, opUin);
             }
         });
     }
@@ -262,7 +275,6 @@ public class PluginManager {
                 }
             };
 
-            // 1. 读取 bsh.dex 资源字节 (优先读取外部，次选 assets)
             byte[] dexBytes = null;
             File customDex = new File(getPluginsStorageDir(context).getParentFile(), "bsh.dex");
             if (customDex.exists() && customDex.length() > 0) {
@@ -283,20 +295,18 @@ public class PluginManager {
                 return null;
             }
 
-            // 2. ★★★ 终极适配 Android 14/15/16: 优先使用 InMemoryDexClassLoader (纯内存加载) ★★★
-            // 从 API 26 (Android 8.0) 原生支持，不向磁盘写任何 dex 文件，从原理上彻底免疫 Writable Dex 安全限制！
+            // Android 14/15/16 优先内存加载
             try {
                 Class<?> inMemoryClz = Class.forName("dalvik.system.InMemoryDexClassLoader");
                 Constructor<?> inMemCtor = inMemoryClz.getConstructor(ByteBuffer.class, ClassLoader.class);
                 ByteBuffer buffer = ByteBuffer.wrap(dexBytes);
                 sBshClassLoader = (ClassLoader) inMemCtor.newInstance(buffer, bshParent);
-                PLog.i("Plugin", "已通过 InMemoryDexClassLoader (纯内存) 加载引擎成功，完美适配 Android 16！");
+                PLog.i("Plugin", "已通过 InMemoryDexClassLoader (纯内存) 加载引擎成功！");
                 return sBshClassLoader;
             } catch (Throwable tMem) {
-                PLog.w("Plugin", "内存加载降级，尝试只读磁盘加载: " + tMem.getMessage());
+                PLog.w("Plugin", "内存加载降级: " + tMem.getMessage());
             }
 
-            // 3. 降级模式：写到 code_cache 并强制设置 setReadOnly()
             File codeCache = context.getCodeCacheDir();
             if (codeCache == null) codeCache = context.getFilesDir();
             File targetDex = new File(codeCache, "bsh_engine.dex");
@@ -309,7 +319,6 @@ public class PluginManager {
                 fos.flush();
             }
 
-            // ★ 必须声明为只读，避免 Android 14+ 抛出 SecurityException
             targetDex.setReadOnly();
 
             File optDir = new File(codeCache, "bsh_opt");
@@ -347,6 +356,11 @@ public class PluginManager {
     }
 
     public static void reloadAll(final Context context) {
+        reloadAll(context, null);
+    }
+
+    // ★ 重载方法同样支持完成监听回调
+    public static void reloadAll(final Context context, final Runnable onComplete) {
         PLog.i("Plugin", "正在重新扫描与重载全部脚本...");
         sWorkerPool.execute(() -> {
             try {
@@ -380,6 +394,10 @@ public class PluginManager {
                 PLog.i("Plugin", "全部脚本重载完成，当前生效运行中: " + count + " 个");
             } catch (Throwable t) {
                 PLog.e("Plugin", "reloadAll 异常: " + t.getMessage(), t);
+            } finally {
+                if (onComplete != null) {
+                    new Handler(Looper.getMainLooper()).post(onComplete);
+                }
             }
         });
     }

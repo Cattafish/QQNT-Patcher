@@ -80,7 +80,7 @@ public class ZzzSettingFragment {
 
             List<Object> groups = new ArrayList<>();
 
-            // 1. 核心功能 (自动从 ModuleManager 动态生成)
+            // 1. 核心功能
             List<Object> funcItems = new ArrayList<>();
             for (IPatchModule module : ModuleManager.getModules()) {
                 if (!module.showInSettings()) continue;
@@ -100,10 +100,13 @@ public class ZzzSettingFragment {
             List<PluginManager.PluginItem> allPlugins = PluginManager.scanAllPlugins(activity);
 
             pluginItems.add(createNativeClickableItem(cl, "重新扫描与重载全部脚本", "刷新", v -> {
-                PluginManager.reloadAll(activity);
-                activity.runOnUiThread(() -> {
-                    Toast.makeText(activity, "已重新扫描，正在更新列表...", Toast.LENGTH_SHORT).show();
-                    new Handler(Looper.getMainLooper()).postDelayed(() -> renderSettingsList(fragment, activity, cl), 600L);
+                Toast.makeText(activity, "正在重载全部脚本...", Toast.LENGTH_SHORT).show();
+                // ★ 绑定重载完成监听：真正重载完毕的一瞬间触发精准刷新
+                PluginManager.reloadAll(activity, () -> {
+                    if (!activity.isFinishing() && !activity.isDestroyed()) {
+                        renderSettingsList(fragment, activity, cl);
+                        Toast.makeText(activity, "重载完成并已刷新", Toast.LENGTH_SHORT).show();
+                    }
                 });
             }));
 
@@ -117,10 +120,14 @@ public class ZzzSettingFragment {
                     pluginItems.add(createNativeSwitchItem(
                             cl, pName + " (" + pId + ")", item.isEnabled,
                             (btn, checked) -> {
-                                PluginManager.setPluginActive(activity, pId, checked);
-                                Toast.makeText(activity, pName + (checked ? " 已启动" : " 已停止"), Toast.LENGTH_SHORT).show();
-                                // 开关拨动后 500ms 自动热刷新列表，直接展示/收起脚本自带入口
-                                new Handler(Looper.getMainLooper()).postDelayed(() -> renderSettingsList(fragment, activity, cl), 500L);
+                                Toast.makeText(activity, pName + (checked ? " 正在启动..." : " 正在停止..."), Toast.LENGTH_SHORT).show();
+                                // ★ 绑定启动完成监听：不管脚本加载多慢，执行完毕的瞬间必定触发热更新展开入口！
+                                PluginManager.setPluginActive(activity, pId, checked, () -> {
+                                    if (!activity.isFinishing() && !activity.isDestroyed()) {
+                                        renderSettingsList(fragment, activity, cl);
+                                        Toast.makeText(activity, pName + (checked ? " 已启动" : " 已停止"), Toast.LENGTH_SHORT).show();
+                                    }
+                                });
                             }
                     ));
 
@@ -246,7 +253,7 @@ public class ZzzSettingFragment {
         Object leftObj = xbdConst.newInstance(title);
 
         Class<?> xcfClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$f");
-        Object rightObj = newInstanceSmart(xcgClass, new Object[]{isChecked, listener, true});
+        Object rightObj = newInstanceSmart(xcfClass, new Object[]{isChecked, listener, true});
 
         Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
         Constructor<?> xConst = xClass.getConstructor(
