@@ -10,23 +10,23 @@ import java.lang.reflect.Method;
 
 public class QUIBadgeHelper {
 
-    // ★ 来自 Smali 的 QQ 官方 QUIBadge 固定控件 ID (0x7f0a5eb2)
     public static final int QUI_BADGE_ID = 0x7f0a5eb2;
 
-    /**
-     * 激活并绑定 QQ 原厂 QUIBadge 控件与右侧文字
-     */
     public static void attachNativeBadge(View root, String rightText, boolean showRedDot, boolean showArrow) {
         if (!(root instanceof ViewGroup)) return;
         try {
             ViewGroup vg = (ViewGroup) root;
 
-            // 1. 设置右侧文字
+            // 1. 设置右侧版本文字（恢复 1.0f 饱满清晰度，绝不发虚发淡）
             TextView rightTv = findRightTextView(vg);
             if (rightTv != null) {
-                rightTv.setText(rightText);
-                rightTv.setVisibility(View.VISIBLE);
-                rightTv.setAlpha(0.7f);
+                if (rightText != null && !rightText.isEmpty()) {
+                    rightTv.setText(rightText);
+                    rightTv.setVisibility(View.VISIBLE);
+                    rightTv.setAlpha(1.0f); // ★ 修复：纯正 100% 不透明度，完美融入原生样式
+                } else {
+                    rightTv.setVisibility(View.GONE);
+                }
             }
 
             // 2. 控制右侧箭头
@@ -35,7 +35,7 @@ public class QUIBadgeHelper {
                 arrowIv.setVisibility(showArrow ? View.VISIBLE : View.GONE);
             }
 
-            // 3. ★ 获取/唤醒 QQ 原厂 QUIBadge 控件并点亮红点
+            // 3. 点亮 QQ 原厂 QUIBadge 红点
             View quiBadge = getOrCreateNativeQUIBadge(root);
             if (quiBadge != null) {
                 if (showRedDot) {
@@ -51,19 +51,12 @@ public class QUIBadgeHelper {
         } catch (Throwable ignored) {}
     }
 
-    /**
-     * 核心：通过官方 ID 或 RightBinding 唤醒原厂 QUIBadge
-     */
     private static View getOrCreateNativeQUIBadge(View root) {
         if (root == null) return null;
-
-        // 方式 1: 直接通过 QQ 原厂固定 ID 查找
         View badge = root.findViewById(QUI_BADGE_ID);
         if (badge != null && badge.getClass().getName().contains("QUIBadge")) {
             return badge;
         }
-
-        // 方式 2: 若处于 lazy 状态尚未加载，反射触发 RightBinding 懒加载
         try {
             Class<?> rootClass = root.getClass();
             for (Field f : rootClass.getDeclaredFields()) {
@@ -86,11 +79,9 @@ public class QUIBadgeHelper {
             }
         } catch (Throwable ignored) {}
 
-        // 方式 3: 递归遍历 View 树查找已挂载的 QUIBadge
         if (root instanceof ViewGroup) {
             return findChildByClassName((ViewGroup) root, "QUIBadge");
         }
-
         return null;
     }
 
@@ -116,7 +107,7 @@ public class QUIBadgeHelper {
             View child = vg.getChildAt(i);
             if (child instanceof TextView) {
                 CharSequence cs = ((TextView) child).getText();
-                if (cs != null && !cs.toString().contains("Zzz") && !cs.toString().contains("检查更新")) {
+                if (cs != null && !cs.toString().contains("Zzz") && !cs.toString().contains("动态脚本") && !cs.toString().contains("检查更新")) {
                     lastTv = (TextView) child;
                 }
             } else if (child instanceof ViewGroup) {

@@ -3,7 +3,6 @@ package com.tencent.qqnt.patch;
 import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
-import android.widget.Toast;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -52,7 +51,7 @@ public class UpdateHelper {
      */
     public static void checkUpdate(Activity activity) {
         if (activity == null) return;
-        Toast.makeText(activity, "正在检查更新...", Toast.LENGTH_SHORT).show();
+        ToastHelper.show(activity, "正在检查更新...");
 
         new Thread(() -> {
             try {
@@ -87,27 +86,27 @@ public class UpdateHelper {
                     activity.runOnUiThread(() -> {
                         if (tag != null && isNewerVersion(tag, ConfigManager.VERSION)) {
                             ConfigManager.setHasNewVersion(true);
-                            Toast.makeText(activity, "发现新版本: " + tag + "，即将前往下载", Toast.LENGTH_LONG).show();
+                            ToastHelper.show(activity, "发现新版本: " + tag + "，即将前往下载");
                             try {
                                 Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl));
                                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                                 activity.startActivity(intent);
                             } catch (Throwable t) {
-                                Toast.makeText(activity, "打开浏览器失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+                                ToastHelper.show(activity, "打开浏览器失败: " + t.getMessage());
                             }
                         } else {
                             ConfigManager.setHasNewVersion(false);
-                            Toast.makeText(activity, "当前已是最新版本 (" + ConfigManager.VERSION + ")", Toast.LENGTH_SHORT).show();
+                            ToastHelper.show(activity, "当前已是最新版本 (" + ConfigManager.VERSION + ")");
                         }
                     });
                 } else {
                     activity.runOnUiThread(() -> {
-                        Toast.makeText(activity, "检查更新失败 (HTTP " + code + ")", Toast.LENGTH_SHORT).show();
+                        ToastHelper.show(activity, "检查更新失败 (HTTP " + code + ")");
                     });
                 }
             } catch (Throwable t) {
                 activity.runOnUiThread(() -> {
-                    Toast.makeText(activity, "检查更新异常: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+                    ToastHelper.show(activity, "检查更新异常: " + t.getMessage());
                 });
             }
         }).start();

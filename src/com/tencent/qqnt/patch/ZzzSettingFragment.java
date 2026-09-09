@@ -9,13 +9,13 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.view.View;
 import android.widget.CompoundButton;
-import android.widget.Toast;
 
 import com.tencent.qqnt.patch.plugin.PluginManager;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -48,7 +48,7 @@ public class ZzzSettingFragment {
             Method startMethod = activityClass.getMethod("start", Context.class, Intent.class, Class.class);
             startMethod.invoke(null, context, intent, fragmentClass);
         } catch (Throwable t) {
-            Toast.makeText(context, "打开设置失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+            ToastHelper.show(context, "打开设置失败: " + t.getMessage());
         }
     }
 
@@ -97,22 +97,21 @@ public class ZzzSettingFragment {
             if (adapter == null) return;
 
             List<Object> groups = new ArrayList<>();
-            // 原生居中 + 斜体注脚
             CharSequence centeredItalicFooter = createCenteredItalicFooter("Created by Zcraft with ❤️");
 
             if (PAGE_PLUGINS.equals(pageType)) {
                 // =====================================================
-                // 页面 B: 纯粹的动态脚本独立管理页
+                // 页面 B: 动态脚本独立管理页
                 // =====================================================
                 List<Object> pluginItems = new ArrayList<>();
                 List<PluginManager.PluginItem> allPlugins = PluginManager.scanAllPlugins(activity);
 
-                pluginItems.add(createNativeClickableItem(cl, "重新扫描与重载全部脚本", "刷新", true, v -> {
-                    Toast.makeText(activity, "正在重载全部脚本...", Toast.LENGTH_SHORT).show();
+                pluginItems.add(createNativeClickableItem(cl, "重新扫描与重载全部脚本", "刷新", true, false, v -> {
+                    ToastHelper.show(activity, "正在重载全部脚本...");
                     PluginManager.reloadAll(activity, () -> {
                         if (!activity.isFinishing() && !activity.isDestroyed()) {
                             renderSettingsList(fragment, activity, cl, pageType);
-                            Toast.makeText(activity, "重载完成并已刷新", Toast.LENGTH_SHORT).show();
+                            ToastHelper.show(activity, "重载完成并已刷新");
                         }
                     });
                 }));
@@ -127,11 +126,11 @@ public class ZzzSettingFragment {
                         pluginItems.add(createNativeSwitchItem(
                                 cl, pName + " (" + pId + ")", item.isEnabled,
                                 (btn, checked) -> {
-                                    Toast.makeText(activity, pName + (checked ? " 正在启动..." : " 正在停止..."), Toast.LENGTH_SHORT).show();
+                                    ToastHelper.show(activity, pName + (checked ? " 正在启动..." : " 正在停止..."));
                                     PluginManager.setPluginActive(activity, pId, checked, () -> {
                                         if (!activity.isFinishing() && !activity.isDestroyed()) {
                                             renderSettingsList(fragment, activity, cl, pageType);
-                                            Toast.makeText(activity, pName + (checked ? " 已启动" : " 已停止"), Toast.LENGTH_SHORT).show();
+                                            ToastHelper.show(activity, pName + (checked ? " 已启动" : " 已停止"));
                                         }
                                     });
                                 }
@@ -142,14 +141,13 @@ public class ZzzSettingFragment {
                                 final String actionName = entry.getKey();
                                 final String actionCallback = entry.getValue();
                                 pluginItems.add(createNativeClickableItem(
-                                        cl, "  ↳ " + actionName, "打开界面", true,
+                                        cl, "  ↳ " + actionName, "打开界面", true, false,
                                         v -> PluginManager.invokePluginMenu(pId, actionCallback, 2, "", actionName)
                                 ));
                             }
                         }
                     }
                 }
-                // 在动态脚本管理页底部添加居中斜体注脚
                 groups.add(createNativeGroup(cl, "已安装插件 (" + allPlugins.size() + ")", centeredItalicFooter, pluginItems));
 
             } else {
@@ -166,7 +164,7 @@ public class ZzzSettingFragment {
                             cl, m.getName(), m.isEnabled(),
                             (btn, checked) -> {
                                 m.setEnabled(checked);
-                                Toast.makeText(activity, m.getName() + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
+                                ToastHelper.show(activity, m.getName() + (checked ? " 已开启" : " 已关闭"));
                             }
                     ));
                 }
@@ -178,11 +176,11 @@ public class ZzzSettingFragment {
                         cl, "调试日志输出 (Logcat)", ConfigManager.isDebugLogEnabled(),
                         (btn, checked) -> {
                             ConfigManager.setDebugLogEnabled(checked);
-                            Toast.makeText(activity, "调试日志" + (checked ? " 已开启" : " 已关闭"), Toast.LENGTH_SHORT).show();
+                            ToastHelper.show(activity, "调试日志" + (checked ? " 已开启" : " 已关闭"));
                         }
                 ));
                 advancedItems.add(createNativeClickableItem(
-                        cl, "实时运行日志", "查看 (" + PLog.getBufferCount() + "条)", true,
+                        cl, "实时运行日志", "查看 (" + PLog.getBufferCount() + "条)", true, false,
                         v -> PLog.showLogDialog(activity)
                 ));
                 groups.add(createNativeGroup(cl, "高级与调试", "", advancedItems));
@@ -191,36 +189,35 @@ public class ZzzSettingFragment {
                 List<Object> aboutItems = new ArrayList<>();
                 aboutItems.add(createNativeTextItem(cl, "当前版本", ConfigManager.VERSION));
 
-                // ★ 检查更新动态判定：有更新显示“有新版本可用”且带箭头；无更新显示“已是最新版本”且不带箭头
+                // ★ 检查更新动态判定：有新版显示“有新版本可用”+箭头+红点；无新版显示“已是最新版本”+无箭头+无红点
                 boolean hasNew = ConfigManager.hasNewVersion();
                 String updateText = hasNew ? "有新版本可用" : "已是最新版本";
                 boolean showArrow = hasNew;
 
                 aboutItems.add(createNativeClickableItem(
-                        cl, "检查更新", updateText, showArrow,
+                        cl, "检查更新", updateText, showArrow, hasNew,
                         v -> UpdateHelper.checkUpdate(activity)
                 ));
 
-                aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", true, v -> {
+                aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", true, false, v -> {
                     try {
                         Intent tgIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.TG_CHANNEL_URL));
                         tgIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         activity.startActivity(tgIntent);
                     } catch (Throwable t) {
-                        Toast.makeText(activity, "打开链接失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+                        ToastHelper.show(activity, "打开链接失败: " + t.getMessage());
                     }
                 }));
-                aboutItems.add(createNativeClickableItem(cl, "GitHub 仓库", "前往", true, v -> {
+                aboutItems.add(createNativeClickableItem(cl, "GitHub 仓库", "前往", true, false, v -> {
                     try {
                         Intent ghIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.GITHUB_REPO_URL));
                         ghIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         activity.startActivity(ghIntent);
                     } catch (Throwable t) {
-                        Toast.makeText(activity, "打开链接失败: " + t.getMessage(), Toast.LENGTH_SHORT).show();
+                        ToastHelper.show(activity, "打开链接失败: " + t.getMessage());
                     }
                 }));
 
-                // 在关于组底部挂载居中斜体注脚
                 groups.add(createNativeGroup(cl, "关于", centeredItalicFooter, aboutItems));
             }
 
@@ -241,16 +238,13 @@ public class ZzzSettingFragment {
         } catch (Throwable ignored) {}
     }
 
-    /**
-     * 生成居中且斜体的说明注脚文本
-     */
     private static CharSequence createCenteredItalicFooter(String text) {
         if (text == null || text.isEmpty()) return "";
         try {
-            SpannableString sp = new SpannableString(text);
-            int len = text.length();
+            String fullText = "\n" + text;
+            SpannableString sp = new SpannableString(fullText);
+            int len = fullText.length();
 
-            // 1. 居中对齐 (AlignmentSpan)
             try {
                 Class<?> alignEnumClz = Class.forName("android.text.Layout$Alignment");
                 Object alignCenter = Enum.valueOf((Class<Enum>) alignEnumClz, "ALIGN_CENTER");
@@ -260,12 +254,11 @@ public class ZzzSettingFragment {
                 sp.setSpan(alignSpan, 0, len, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             } catch (Throwable ignored) {}
 
-            // 2. 斜体样式 (StyleSpan: Typeface.ITALIC = 2)
             try {
                 Class<?> styleSpanClz = Class.forName("android.text.style.StyleSpan");
                 Constructor<?> styleCtor = styleSpanClz.getConstructor(int.class);
                 Object italicSpan = styleCtor.newInstance(2);
-                sp.setSpan(italicSpan, 0, len, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                sp.setSpan(italicSpan, 1, len, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             } catch (Throwable ignored) {}
 
             return sp;
@@ -306,13 +299,12 @@ public class ZzzSettingFragment {
         return xConst.newInstance(leftObj, rightObj);
     }
 
-    private static Object createNativeClickableItem(ClassLoader cl, String title, String rightText, boolean showArrow, View.OnClickListener listener) throws Exception {
+    private static Object createNativeClickableItem(ClassLoader cl, String title, String rightText, boolean showArrow, boolean showRedDot, View.OnClickListener listener) throws Exception {
         Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
         Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
         Object leftObj = xbdConst.newInstance(title);
 
         Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
-        // 支持传入 showArrow 参数，精准控制右侧箭头有无
         Object rightObj = newInstanceSmart(xcgClass, new Object[]{rightText, showArrow, false});
 
         Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
@@ -331,6 +323,27 @@ public class ZzzSettingFragment {
                 }
             }
         }
+
+        // ★ 通过 g 接口代理挂载原生红点
+        if (showRedDot) {
+            try {
+                Class<?> gClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.g");
+                Object gProxy = Proxy.newProxyInstance(cl, new Class<?>[]{gClass}, (proxy, method, args) -> {
+                    if ("G".equals(method.getName()) && args != null && args.length == 1 && (args[0] instanceof View)) {
+                        QUIBadgeHelper.attachNativeBadge((View) args[0], rightText, true, showArrow);
+                    }
+                    return null;
+                });
+                for (Method m : item.getClass().getMethods()) {
+                    Class<?>[] pts = m.getParameterTypes();
+                    if ("w".equals(m.getName()) && pts.length == 1 && pts[0] == gClass) {
+                        m.invoke(item, gProxy);
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
         return item;
     }
 

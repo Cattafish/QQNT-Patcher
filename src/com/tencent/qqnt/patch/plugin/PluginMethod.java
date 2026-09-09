@@ -9,6 +9,7 @@ import android.widget.Toast;
 
 import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
 import com.tencent.qqnt.patch.PLog;
+import com.tencent.qqnt.patch.ToastHelper;
 import me.yxp.qfun.plugin.bean.ForbidInfo;
 import me.yxp.qfun.plugin.bean.FriendInfo;
 import me.yxp.qfun.plugin.bean.GroupInfo;
@@ -68,11 +69,7 @@ public class PluginMethod {
 
     public void toast(final Object msg) {
         if (mContext == null) return;
-        mMainHandler.post(() -> {
-            try {
-                Toast.makeText(mContext, String.valueOf(msg), Toast.LENGTH_SHORT).show();
-            } catch (Throwable ignored) {}
-        });
+        ToastHelper.show(mContext, String.valueOf(msg));
     }
 
     public void qqToast(final int icon, final Object msg) {

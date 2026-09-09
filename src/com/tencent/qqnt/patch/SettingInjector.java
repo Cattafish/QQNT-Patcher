@@ -9,6 +9,7 @@ import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ImageSpan;
 import android.util.Log;
+import android.view.View;
 
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
@@ -23,6 +24,10 @@ public class SettingInjector {
     private static final String TITLE_ZZZ = "Zzz";
     private static final String TITLE_SCRIPTS = "动态脚本";
 
+    interface ViewBindCallback {
+        void onBind(View view);
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static void inject(Context context, List resultList, String itemClassName) {
         if (context == null || resultList == null || resultList.isEmpty() || itemClassName == null) {
@@ -33,58 +38,55 @@ public class SettingInjector {
             ClassLoader cl = context.getClassLoader();
             Class<?> itemClass = cl.loadClass(itemClassName);
             Class<?> func0Class = cl.loadClass("kotlin.jvm.functions.Function0");
+            Class<?> func1Class = cl.loadClass("kotlin.jvm.functions.Function1");
             Object unitInstance = getKotlinUnitInstance(cl);
 
-            // 1. Zzz 项（带自定义图标）
-            CharSequence finalZzzTitle = TITLE_ZZZ;
-            try {
-                InputStream is = context.getAssets().open("zzz_icon.png");
-                Bitmap rawBitmap = BitmapFactory.decodeStream(is);
-                if (rawBitmap != null) {
-                    float density = context.getResources().getDisplayMetrics().density;
-                    int iconSize = (int) (24 * density + 0.5f);
-                    Bitmap scaledBitmap = Bitmap.createScaledBitmap(rawBitmap, iconSize, iconSize, true);
-                    Drawable drawable = new BitmapDrawable(context.getResources(), scaledBitmap);
-                    drawable.setBounds(0, 0, iconSize, iconSize);
-
-                    SpannableString sp = new SpannableString("   " + finalZzzTitle);
-                    sp.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    finalZzzTitle = sp;
-                }
-            } catch (Throwable ignored) {}
-
+            // =========================================================
+            // 1. Zzz 项：挂载 zzz_icon.png，右侧显示版本号 + 有更新时亮起红点
+            // =========================================================
+            CharSequence finalZzzTitle = createTitleWithIcon(context, "zzz_icon.png", TITLE_ZZZ);
             Object zzzItem = newInstanceSmart(itemClass, new Object[]{context, 10, finalZzzTitle, 0, null});
             if (zzzItem != null) {
-                Object clickProxy = Proxy.newProxyInstance(
-                        cl,
-                        new Class[]{func0Class},
-                        (proxy, method, args) -> {
-                            if ("invoke".equals(method.getName())) {
-                                ZzzSettingFragment.startCore(context);
-                            }
-                            return unitInstance;
-                        }
-                );
-                bindItemClick(itemClass, zzzItem, func0Class, clickProxy);
+                // 点击事件
+                Object clickProxy = Proxy.newProxyInstance(cl, new Class[]{func0Class}, (proxy, method, args) -> {
+                    if ("invoke".equals(method.getName())) {
+                        ZzzSettingFragment.startCore(context);
+                    }
+                    return unitInstance;
+                });
+                bindItemAction(itemClass, zzzItem, func0Class, clickProxy);
+
+                // ★ 右侧显示版本号与更新红点
+                bindItemView(cl, itemClass, zzzItem, func1Class, unitInstance, view -> {
+                    boolean hasNew = ConfigManager.hasNewVersion();
+                    QUIBadgeHelper.attachNativeBadge(view, ConfigManager.VERSION, hasNew, true);
+                });
             }
 
-            // 2. 动态脚本项（连在 Zzz 底部）
-            Object scriptItem = newInstanceSmart(itemClass, new Object[]{context, 11, TITLE_SCRIPTS, 0, null});
+            // =========================================================
+            // 2. 动态脚本项：挂载猫猫头 script_icon.png 图标
+            // =========================================================
+            CharSequence finalScriptTitle = createTitleWithIcon(context, "script_icon.png", TITLE_SCRIPTS);
+            Object scriptItem = newInstanceSmart(itemClass, new Object[]{context, 11, finalScriptTitle, 0, null});
             if (scriptItem != null) {
-                Object clickProxy = Proxy.newProxyInstance(
-                        cl,
-                        new Class[]{func0Class},
-                        (proxy, method, args) -> {
-                            if ("invoke".equals(method.getName())) {
-                                ZzzSettingFragment.startPlugins(context);
-                            }
-                            return unitInstance;
-                        }
-                );
-                bindItemClick(itemClass, scriptItem, func0Class, clickProxy);
+                // 点击事件
+                Object clickProxy = Proxy.newProxyInstance(cl, new Class[]{func0Class}, (proxy, method, args) -> {
+                    if ("invoke".equals(method.getName())) {
+                        ZzzSettingFragment.startPlugins(context);
+                    }
+                    return unitInstance;
+                });
+                bindItemAction(itemClass, scriptItem, func0Class, clickProxy);
+
+                // 右侧箭头
+                bindItemView(cl, itemClass, scriptItem, func1Class, unitInstance, view -> {
+                    QUIBadgeHelper.attachNativeBadge(view, "", false, true);
+                });
             }
 
-            // 3. 组合连体卡片，注意：主页面不加底部注脚（传空字符串）
+            // =========================================================
+            // 3. 组合连体卡片并注入主设置页
+            // =========================================================
             List<Object> combinedItems = new ArrayList<>();
             if (zzzItem != null) combinedItems.add(zzzItem);
             if (scriptItem != null) combinedItems.add(scriptItem);
@@ -97,7 +99,7 @@ public class SettingInjector {
             Object[] preferredGroupArgs = new Object[]{
                     combinedItems,
                     "",
-                    "", // 主页面底部保持干净，无注脚
+                    "",
                     0,
                     null
             };
@@ -116,7 +118,26 @@ public class SettingInjector {
         }
     }
 
-    private static void bindItemClick(Class<?> itemClass, Object item, Class<?> func0Class, Object proxy) {
+    private static CharSequence createTitleWithIcon(Context context, String assetName, String title) {
+        try {
+            InputStream is = context.getAssets().open(assetName);
+            Bitmap rawBitmap = BitmapFactory.decodeStream(is);
+            if (rawBitmap != null) {
+                float density = context.getResources().getDisplayMetrics().density;
+                int iconSize = (int) (24 * density + 0.5f);
+                Bitmap scaledBitmap = Bitmap.createScaledBitmap(rawBitmap, iconSize, iconSize, true);
+                Drawable drawable = new BitmapDrawable(context.getResources(), scaledBitmap);
+                drawable.setBounds(0, 0, iconSize, iconSize);
+
+                SpannableString sp = new SpannableString("   " + title);
+                sp.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                return sp;
+            }
+        } catch (Throwable ignored) {}
+        return title;
+    }
+
+    private static void bindItemAction(Class<?> itemClass, Object item, Class<?> func0Class, Object proxy) {
         for (Method m : itemClass.getMethods()) {
             Class<?>[] pts = m.getParameterTypes();
             if (pts.length == 1 && pts[0] == func0Class && m.getReturnType() == void.class) {
@@ -126,6 +147,24 @@ public class SettingInjector {
                 break;
             }
         }
+    }
+
+    private static void bindItemView(ClassLoader cl, Class<?> itemClass, Object item, Class<?> func1Class, Object unitInstance, ViewBindCallback callback) {
+        try {
+            Object viewProxy = Proxy.newProxyInstance(cl, new Class[]{func1Class}, (proxy, method, args) -> {
+                if ("invoke".equals(method.getName()) && args != null && args.length == 1 && (args[0] instanceof View)) {
+                    callback.onBind((View) args[0]);
+                }
+                return unitInstance;
+            });
+            for (Method m : itemClass.getMethods()) {
+                Class<?>[] pts = m.getParameterTypes();
+                if (pts.length == 1 && pts[0] == func1Class && m.getReturnType() == void.class) {
+                    m.invoke(item, viewProxy);
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static Object newInstanceSmart(Class<?> clazz, Object[] preferredArgs) {
