@@ -47,6 +47,10 @@ public class PatchBridge {
     public static void handleAIOHide() {
         ModuleManager.dispatchAIOHide();
     }
+    
+    public static boolean isTabletModeEnabled() {
+        return ConfigManager.isModuleEnabled("tablet_mode", false);
+    }
 
     public static IKernelMsgListener wrapKernelMsgListener(IKernelMsgListener original) {
         if (original == null) return null;

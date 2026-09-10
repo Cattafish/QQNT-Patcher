@@ -43,3 +43,44 @@ def get_dynamic_setting_rule_fast(dex_data_dict):
     return-object v0"""
         }
     return None
+
+def get_dynamic_tablet_rule_fast(dex_data_dict):
+    """
+    全动态嗅探 PadUtil 设备类型判断类与方法 (自适应类名/方法名/枚举类型混淆)
+    """
+    for _, dex_bytes in dex_data_dict.items():
+        # 快速特征预检
+        if b"initDeviceType type = " in dex_bytes or b"key_common_split_switch" in dex_bytes:
+            p = FastDexParser(dex_bytes)
+            if not p.valid:
+                continue
+
+            # 1. 动态嗅探引用特征日志字符串的目标类 (无论是 PadUtil 还是混淆后的 a/b/c 类)
+            candidate_classes = p.find_classes_referencing_string_strictly("initDeviceType type = ")
+            if not candidate_classes:
+                candidate_classes = p.find_classes_referencing_string_strictly("key_common_split_switch")
+
+            for cls_name, cls_idx in candidate_classes:
+                methods = p.get_class_methods(cls_idx)
+                for m_name, proto_desc, is_virt, code_off, access_flags in methods:
+                    # 2. 匹配 static 方法，且原型为 (Landroid/content/Context;)L<DeviceType>;
+                    is_static = bool(access_flags & 0x0008)
+                    if is_static and proto_desc.startswith("(Landroid/content/Context;)L"):
+                        return_type = proto_desc.split(')')[1]  # 动态拿到 DeviceType 枚举类的完整混淆描述符
+                        target_method = f"{m_name}{proto_desc}"
+
+                        return {
+                            "name": f"强制平板模式动态穿透 ({cls_name}->{m_name})",
+                            "target_class": cls_name,
+                            "target_method": target_method,
+                            "type": "INSERT_BEFORE",
+                            "smali": f"""
+    invoke-static {{}}, Lcom/tencent/qqnt/patch/PatchBridge;->isTabletModeEnabled()Z
+    move-result v0
+    if-eqz v0, :cond_tablet_pass
+    sget-object v0, {return_type}->TABLET:{return_type}
+    return-object v0
+    :cond_tablet_pass
+"""
+                        }
+    return None
