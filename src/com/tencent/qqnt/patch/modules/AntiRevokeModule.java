@@ -128,7 +128,7 @@ public class AntiRevokeModule implements IPatchModule {
 
             if (chatType != 0) {
                 String myUin = MsgSender.getMyUin();
-                // ★ 加固：必须两者均为合法数字 QQ，且被拍对象为当前登录账号
+                // 严格校验：两者均为合法数字 QQ，且被拍对象是自己
                 if (isValidQQ(fromUin) && isValidQQ(toUin) && (toUin.equals(myUin) || myUin.isEmpty())) {
                     PLog.i("PaiYiPai", "成功捕获拍一拍事件: peer=" + peerUin + ", 来自=" + fromUin + ", 目标=" + toUin);
                     PluginManager.dispatchPaiYiPai(peerUin, chatType, fromUin);
@@ -147,13 +147,13 @@ public class AntiRevokeModule implements IPatchModule {
             int wire = (int) (tag & 7);
             if (wire == 0) {
                 long val = Proto.readVarint(data, pos);
-                pos = lastPos;
+                pos = Proto.lastPos;
                 if (field == targetField) return String.valueOf(val);
             } else if (wire == 1) {
                 pos += 8;
             } else if (wire == 2) {
                 int l = (int) Proto.readVarint(data, pos);
-                pos = lastPos;
+                pos = Proto.lastPos;
                 if (field == targetField && l > 0 && pos + l <= len) {
                     return new String(Proto.subArray(data, pos, l), StandardCharsets.UTF_8);
                 }
