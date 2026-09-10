@@ -20,7 +20,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class PluginCompiler {
 
@@ -78,6 +81,42 @@ public class PluginCompiler {
         PLog.i("Plugin", "[" + mPluginId + "] 注册气泡长按菜单: " + name + " -> " + callback);
     }
 
+    /**
+     * ★ 加固：精准在目标函数体内执行作用域隔离，绝不波及其他函数
+     */
+    private String sanitizeScriptCode(String code) {
+        if (code == null || code.isEmpty()) return "";
+        try {
+            String suffix = "_rnd_" + (1000 + new Random().nextInt(9000));
+
+            // 1. 仅在 createShape 方法体内安全隔离局部变量 g
+            Pattern shapePattern = Pattern.compile("(?s)(GradientDrawable\\s+createShape\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})");
+            Matcher shapeMatcher = shapePattern.matcher(code);
+            if (shapeMatcher.find()) {
+                String body = shapeMatcher.group(2);
+                body = body.replaceAll("(?m)(GradientDrawable\\s+)g(\\s*=)", "$1g" + suffix + "$2")
+                           .replaceAll("(?m)\\bg\\.(setColor|setCornerRadius|setStroke|setShape)", "g" + suffix + ".$1")
+                           .replaceAll("(?m)(return\\s+)g(\\s*;)", "$1g" + suffix + "$2");
+                code = code.substring(0, shapeMatcher.start(2)) + body + code.substring(shapeMatcher.end(2));
+            }
+
+            // 2. 仅在 createInput 方法体内安全隔离局部变量 p 和 e
+            Pattern inputPattern = Pattern.compile("(?s)(EditText\\s+createInput\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})");
+            Matcher inputMatcher = inputPattern.matcher(code);
+            if (inputMatcher.find()) {
+                String body = inputMatcher.group(2);
+                body = body.replaceAll("(?m)(LayoutParams\\s+)p(\\s*=)", "$1p" + suffix + "$2")
+                           .replaceAll("(?m)\\bp\\.(bottomMargin|topMargin|leftMargin|rightMargin|width|height|gravity|weight)", "p" + suffix + ".$1")
+                           .replaceAll("(?m)(setLayoutParams\\(\\s*)p(\\s*\\))", "$1p" + suffix + "$2")
+                           .replaceAll("(?m)(EditText\\s+)e(\\s*=)", "$1e" + suffix + "$2")
+                           .replaceAll("(?m)\\be\\.(setHint|setText|setTextSize|setPadding|setBackground|setBackgroundDrawable|setLayoutParams)", "e" + suffix + ".$1")
+                           .replaceAll("(?m)(return\\s+)e(\\s*;)", "$1e" + suffix + "$2");
+                code = code.substring(0, inputMatcher.start(2)) + body + code.substring(inputMatcher.end(2));
+            }
+        } catch (Throwable ignored) {}
+        return code;
+    }
+
     public void loadJava(String path) {
         if (mInterpreter == null) return;
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
@@ -87,6 +126,7 @@ public class PluginCompiler {
             if (!f.exists()) return;
             long t0 = System.currentTimeMillis();
             String rawCode = readFileContent(f);
+            rawCode = sanitizeScriptCode(rawCode);
             Method evalMethod = mInterpreter.getClass().getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, rawCode);
             syncNewClassLoaders(f.getName().replace(".java", ""));
@@ -214,6 +254,8 @@ public class PluginCompiler {
                 throw new IllegalStateException(mLastError);
             }
 
+            rawCode = sanitizeScriptCode(rawCode);
+
             Method evalMethod = interpClass.getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, rawCode);
 
@@ -289,7 +331,6 @@ public class PluginCompiler {
         invokeScriptMethod("chatInterface", new Class[]{int.class, String.class, String.class}, new Object[]{cType, peerUin, name});
     }
 
-    // ★ 核心修复：同时触发 onPaiYiPai 与 onPai，保证所有 QFun 脚本均能准确捕获
     public void onPaiYiPai(String peerUin, int chatType, String opUin) {
         invokeScriptMethod("onPai", new Class[]{String.class, int.class, String.class}, new Object[]{peerUin, chatType, opUin});
         invokeScriptMethod("onPaiYiPai", new Class[]{String.class, int.class, String.class}, new Object[]{peerUin, chatType, opUin});

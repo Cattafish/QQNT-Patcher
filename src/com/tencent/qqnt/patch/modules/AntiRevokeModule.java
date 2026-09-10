@@ -86,7 +86,7 @@ public class AntiRevokeModule implements IPatchModule {
             byte[] subBytes = Proto.getBytes(bodyBytes, 2);
             if (subBytes == null) return;
 
-            // 1. 群禁言事件: cmd1 == 732 && cmd2 == 12
+            // 1. 群禁言事件
             if (cmd1 == 732 && cmd2 == 12) {
                 long troopUin = Proto.getVarint(subBytes, 1);
                 String opUid = Proto.getString(subBytes, 4);
@@ -102,7 +102,7 @@ public class AntiRevokeModule implements IPatchModule {
                 return;
             }
 
-            // 2. 拍一拍事件: 完全对齐 QFun 规范
+            // 2. 拍一拍事件: 双向 UIN 严格校验
             int chatType = 0;
             String peerUin = "";
             String fromUin = "";
@@ -128,8 +128,8 @@ public class AntiRevokeModule implements IPatchModule {
 
             if (chatType != 0) {
                 String myUin = MsgSender.getMyUin();
-                // 严格准入：fromUin 必须是合法 QQ，且被拍对象必须是自己 (对齐 QFun: toUin == currentUin)
-                if (isValidQQ(fromUin) && (toUin.equals(myUin) || myUin.isEmpty())) {
+                // ★ 加固：必须两者均为合法数字 QQ，且被拍对象为当前登录账号
+                if (isValidQQ(fromUin) && isValidQQ(toUin) && (toUin.equals(myUin) || myUin.isEmpty())) {
                     PLog.i("PaiYiPai", "成功捕获拍一拍事件: peer=" + peerUin + ", 来自=" + fromUin + ", 目标=" + toUin);
                     PluginManager.dispatchPaiYiPai(peerUin, chatType, fromUin);
                 }
@@ -137,9 +137,6 @@ public class AntiRevokeModule implements IPatchModule {
         } catch (Throwable ignored) {}
     }
 
-    /**
-     * 健壮解析 UIN (兼容 uint64 varint 与 utf-8 字符串双重下发编码)
-     */
     private static String readUin(byte[] data, int targetField) {
         if (data == null) return "";
         int pos = 0, len = data.length;
@@ -150,13 +147,13 @@ public class AntiRevokeModule implements IPatchModule {
             int wire = (int) (tag & 7);
             if (wire == 0) {
                 long val = Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
+                pos = lastPos;
                 if (field == targetField) return String.valueOf(val);
             } else if (wire == 1) {
                 pos += 8;
             } else if (wire == 2) {
                 int l = (int) Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
+                pos = lastPos;
                 if (field == targetField && l > 0 && pos + l <= len) {
                     return new String(Proto.subArray(data, pos, l), StandardCharsets.UTF_8);
                 }
@@ -170,9 +167,6 @@ public class AntiRevokeModule implements IPatchModule {
         return "";
     }
 
-    /**
-     * 对齐 QFun extractQQ: 解析 uin_str1 / uin_str2
-     */
     private static String extractQQ(String target, String type) {
         if (target == null || target.isEmpty()) return "";
         String key = "uin_str" + type;
@@ -200,9 +194,6 @@ public class AntiRevokeModule implements IPatchModule {
         return raw.substring(0, end);
     }
 
-    /**
-     * 对齐 QFun extractToUinFromArray: 私聊中从 1.3.2.7 重复结构体中提取 uin_str2
-     */
     private static String extractToUinFromField7(byte[] data) {
         if (data == null) return "";
         int pos = 0, len = data.length;
