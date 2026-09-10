@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""你的原版 14 条核心扩展规则"""
+"""核心扩展与分流规则"""
 
 BASE_RULES = [
     {
@@ -156,6 +156,42 @@ BASE_RULES = [
         "smali": """
     move-object/16 v0, p1
     invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/TroopMemberJoinHandler;->onPushReceive(Ljava/util/ArrayList;)V
+"""
+    },
+    {
+        "name": "静默 @全体成员 实时通知 (NotificationFacade.x)",
+        "target_class": "Lcom/tencent/qqnt/notification/NotificationFacade;",
+        "target_method": "x(Lcom/tencent/qqnt/notification/NotificationFacade;Lmqq/app/AppRuntime;Lcom/tencent/qqnt/kernel/nativeinterface/MsgNotifyItem;ZLcom/tencent/qqnt/notification/trace/INotifyTracker;Lcom/tencent/qqnt/global/settings/notification/a;)Lcom/tencent/qqnt/notification/NotificationFacade$a$a;",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p2
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->shouldDropMsgNotify(Ljava/lang/Object;)Z
+    move-result v0
+    if-eqz v0, :cond_pass_x
+    new-instance v0, Lcom/tencent/qqnt/notification/NotificationFacade$a$a;
+    const/4 v1, 0x0
+    const/4 v2, 0x0
+    invoke-direct {v0, v1, v2}, Lcom/tencent/qqnt/notification/NotificationFacade$a$a;-><init>(Lcom/tencent/qqnt/notification/struct/d;Z)V
+    return-object v0
+    :cond_pass_x
+"""
+    },
+    {
+        "name": "静默 @全体成员 会话通知 (NotificationFacade.y)",
+        "target_class": "Lcom/tencent/qqnt/notification/NotificationFacade;",
+        "target_method": "y(Lcom/tencent/qqnt/notification/NotificationFacade;Lmqq/app/AppRuntime;Lcom/tencent/qqnt/kernel/nativeinterface/RecentContactInfo;Lcom/tencent/qqnt/kernel/nativeinterface/NotificationCommonInfo;ZLcom/tencent/qqnt/notification/trace/INotifyTracker;Lcom/tencent/qqnt/global/settings/notification/a;)Lcom/tencent/qqnt/notification/NotificationFacade$a$a;",
+        "type": "INSERT_BEFORE",
+        "smali": """
+    move-object/16 v0, p2
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->shouldDropRecentContact(Ljava/lang/Object;)Z
+    move-result v0
+    if-eqz v0, :cond_pass_y
+    new-instance v0, Lcom/tencent/qqnt/notification/NotificationFacade$a$a;
+    const/4 v1, 0x0
+    const/4 v2, 0x0
+    invoke-direct {v0, v1, v2}, Lcom/tencent/qqnt/notification/NotificationFacade$a$a;-><init>(Lcom/tencent/qqnt/notification/struct/d;Z)V
+    return-object v0
+    :cond_pass_y
 """
     }
 ]

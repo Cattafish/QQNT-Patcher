@@ -20,7 +20,9 @@ public class ModuleManager {
         register(new com.tencent.qqnt.patch.modules.FlashPicModule());
         register(new com.tencent.qqnt.patch.modules.MeowModule());
         register(new com.tencent.qqnt.patch.modules.FloatingBallModule());
-        register(new com.tencent.qqnt.patch.modules.TabletModeModule()); 
+        register(new com.tencent.qqnt.patch.modules.TabletModeModule());
+        register(new com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule());
+        register(new com.tencent.qqnt.patch.modules.TodoNotifyBlockModule());
     }
 
     public static void register(IPatchModule module) {

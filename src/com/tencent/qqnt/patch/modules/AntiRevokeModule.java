@@ -8,10 +8,13 @@ import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
 import com.tencent.qqnt.kernelpublic.nativeinterface.JsonGrayElement;
 import com.tencent.qqnt.ntrelation.friendsinfo.api.IFriendsInfoService;
 import com.tencent.qqnt.patch.IPatchModule;
+import com.tencent.qqnt.patch.PLog;
+import com.tencent.qqnt.patch.plugin.MsgSender;
 import com.tencent.qqnt.patch.plugin.PluginManager;
 import com.tencent.relation.common.api.IRelationNTUinAndUidApi;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -43,7 +46,6 @@ public class AntiRevokeModule implements IPatchModule {
         if (cmd == null || buf == null) return buf;
 
         if (CMD_MSG_PUSH.equals(cmd)) {
-            // 解析拍一拍与群禁言事件并广播给脚本
             dispatchNudgeAndShutUpEvents(buf);
 
             int revokeType = checkRevokeType(buf);
@@ -97,35 +99,146 @@ public class AntiRevokeModule implements IPatchModule {
                         PluginManager.dispatchTroopShutUp(String.valueOf(troopUin), getUin(memberUid), time, getUin(opUid));
                     }
                 }
+                return;
             }
-            // 2. 拍一拍事件: cmd1 == 732 && cmd2 == 20 (群) 或 cmd1 == 528 && cmd2 == 290 (私聊)
-            else if (cmd1 == 732 && cmd2 == 20) {
-                byte[] head1 = Proto.getBytes(qqMsgBytes, 1);
-                String peerUin = head1 != null ? String.valueOf(Proto.getVarint(head1, 1)) : "";
-                String content = new String(subBytes);
-                String fromUin = extractQQ(content, "1");
-                PluginManager.dispatchPaiYiPai(peerUin, 2, fromUin);
-            } else if (cmd1 == 528 && cmd2 == 290) {
-                byte[] head1 = Proto.getBytes(qqMsgBytes, 1);
-                String peerUin = head1 != null ? Proto.getString(head1, 1) : "";
-                PluginManager.dispatchPaiYiPai(peerUin, 1, peerUin);
+
+            // 2. 拍一拍事件: 完全对齐 QFun 规范
+            int chatType = 0;
+            String peerUin = "";
+            String fromUin = "";
+            String toUin = "";
+
+            byte[] head1 = Proto.getBytes(qqMsgBytes, 1);
+
+            // 群聊拍一拍: cmd1 == 732 && cmd2 == 20
+            if (cmd1 == 732 && cmd2 == 20) {
+                chatType = 2;
+                peerUin = readUin(head1, 1);
+                String content = new String(subBytes, StandardCharsets.UTF_8);
+                fromUin = extractQQ(content, "1");
+                toUin = extractQQ(content, "2");
+            }
+            // 私聊拍一拍: cmd1 == 528 && cmd2 == 290
+            else if (cmd1 == 528 && cmd2 == 290) {
+                chatType = 1;
+                peerUin = readUin(head1, 1);
+                fromUin = peerUin;
+                toUin = extractToUinFromField7(subBytes);
+            }
+
+            if (chatType != 0) {
+                String myUin = MsgSender.getMyUin();
+                // 严格准入：fromUin 必须是合法 QQ，且被拍对象必须是自己 (对齐 QFun: toUin == currentUin)
+                if (isValidQQ(fromUin) && (toUin.equals(myUin) || myUin.isEmpty())) {
+                    PLog.i("PaiYiPai", "成功捕获拍一拍事件: peer=" + peerUin + ", 来自=" + fromUin + ", 目标=" + toUin);
+                    PluginManager.dispatchPaiYiPai(peerUin, chatType, fromUin);
+                }
             }
         } catch (Throwable ignored) {}
     }
 
-    private static String extractQQ(String text, String type) {
-        try {
-            String key = "uin_str" + type;
-            int idx = text.indexOf(key);
-            if (idx == -1) return "";
-            idx += key.length();
-            while (idx < text.length() && !Character.isDigit(text.charAt(idx))) idx++;
-            int end = idx;
-            while (end < text.length() && Character.isDigit(text.charAt(end))) end++;
-            return text.substring(idx, end);
-        } catch (Throwable t) {
-            return "";
+    /**
+     * 健壮解析 UIN (兼容 uint64 varint 与 utf-8 字符串双重下发编码)
+     */
+    private static String readUin(byte[] data, int targetField) {
+        if (data == null) return "";
+        int pos = 0, len = data.length;
+        while (pos < len) {
+            long tag = Proto.readVarint(data, pos);
+            pos = Proto.lastPos;
+            int field = (int) (tag >>> 3);
+            int wire = (int) (tag & 7);
+            if (wire == 0) {
+                long val = Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+                if (field == targetField) return String.valueOf(val);
+            } else if (wire == 1) {
+                pos += 8;
+            } else if (wire == 2) {
+                int l = (int) Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+                if (field == targetField && l > 0 && pos + l <= len) {
+                    return new String(Proto.subArray(data, pos, l), StandardCharsets.UTF_8);
+                }
+                pos += l;
+            } else if (wire == 5) {
+                pos += 4;
+            } else {
+                break;
+            }
         }
+        return "";
+    }
+
+    /**
+     * 对齐 QFun extractQQ: 解析 uin_str1 / uin_str2
+     */
+    private static String extractQQ(String target, String type) {
+        if (target == null || target.isEmpty()) return "";
+        String key = "uin_str" + type;
+        int keyIndex = target.indexOf(key);
+        if (keyIndex == -1) return "";
+
+        int startIndex = keyIndex + key.length();
+        int digitStart = -1;
+        for (int i = startIndex; i < target.length(); i++) {
+            if (Character.isDigit(target.charAt(i))) {
+                digitStart = i;
+                break;
+            }
+        }
+        if (digitStart == -1) return "";
+
+        int colonIdx = target.indexOf(':', digitStart);
+        int realEnd = (colonIdx != -1) ? colonIdx : target.length();
+
+        String raw = target.substring(digitStart, realEnd).trim();
+        int end = 0;
+        while (end < raw.length() && Character.isDigit(raw.charAt(end))) {
+            end++;
+        }
+        return raw.substring(0, end);
+    }
+
+    /**
+     * 对齐 QFun extractToUinFromArray: 私聊中从 1.3.2.7 重复结构体中提取 uin_str2
+     */
+    private static String extractToUinFromField7(byte[] data) {
+        if (data == null) return "";
+        int pos = 0, len = data.length;
+        while (pos < len) {
+            long tag = Proto.readVarint(data, pos);
+            pos = Proto.lastPos;
+            int field = (int) (tag >>> 3);
+            int wire = (int) (tag & 7);
+            if (wire == 2) {
+                int l = (int) Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+                if (field == 7 && pos + l <= len) {
+                    byte[] itemBytes = Proto.subArray(data, pos, l);
+                    String k = Proto.getString(itemBytes, 1);
+                    if ("uin_str2".equals(k)) {
+                        String v = Proto.getString(itemBytes, 2);
+                        if (!v.isEmpty()) return v;
+                    }
+                }
+                pos += l;
+            } else if (wire == 0) {
+                Proto.readVarint(data, pos);
+                pos = Proto.lastPos;
+            } else if (wire == 1) {
+                pos += 8;
+            } else if (wire == 5) {
+                pos += 4;
+            } else {
+                break;
+            }
+        }
+        return "";
+    }
+
+    private static boolean isValidQQ(String input) {
+        return input != null && input.matches("[1-9]\\d{4,12}");
     }
 
     private static int checkRevokeType(byte[] buf) {
@@ -484,7 +597,7 @@ public class AntiRevokeModule implements IPatchModule {
 
         static String getString(byte[] data, int targetField) {
             byte[] b = getBytes(data, targetField);
-            return b != null ? new String(b) : "";
+            return b != null ? new String(b, StandardCharsets.UTF_8) : "";
         }
 
         static long getVarint(byte[] data, int targetField) {

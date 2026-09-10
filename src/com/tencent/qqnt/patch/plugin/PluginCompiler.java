@@ -209,7 +209,6 @@ public class PluginCompiler {
             String rawCode = readFileContent(scriptFile);
             mLoadedCodeLength = rawCode.length();
 
-            // ★ 严禁空代码假死运行！如果读出来是 0 字节，立即报权限或空文件错误
             if (rawCode.trim().isEmpty()) {
                 mLastError = "main.java 读取为空(请检查文件权限或内容)";
                 throw new IllegalStateException(mLastError);
@@ -218,7 +217,6 @@ public class PluginCompiler {
             Method evalMethod = interpClass.getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, rawCode);
 
-            // 自动检测并执行标准 QFun 脚本的 init() 或 onLoad()
             try {
                 Method getNameSpaceMethod = interpClass.getMethod("getNameSpace");
                 Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
@@ -291,7 +289,9 @@ public class PluginCompiler {
         invokeScriptMethod("chatInterface", new Class[]{int.class, String.class, String.class}, new Object[]{cType, peerUin, name});
     }
 
+    // ★ 核心修复：同时触发 onPaiYiPai 与 onPai，保证所有 QFun 脚本均能准确捕获
     public void onPaiYiPai(String peerUin, int chatType, String opUin) {
+        invokeScriptMethod("onPai", new Class[]{String.class, int.class, String.class}, new Object[]{peerUin, chatType, opUin});
         invokeScriptMethod("onPaiYiPai", new Class[]{String.class, int.class, String.class}, new Object[]{peerUin, chatType, opUin});
     }
 
@@ -320,6 +320,13 @@ public class PluginCompiler {
             Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
             Method getMethodM = nameSpace.getClass().getMethod("getMethod", String.class, Class[].class);
             Object targetMethod = getMethodM.invoke(nameSpace, methodName, types);
+            if (targetMethod == null) {
+                Class<?>[] altTypes = types.clone();
+                for (int i = 0; i < altTypes.length; i++) {
+                    if (altTypes[i] == int.class) altTypes[i] = Integer.class;
+                }
+                targetMethod = getMethodM.invoke(nameSpace, methodName, altTypes);
+            }
             if (targetMethod != null) {
                 Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
                 invokeM.invoke(targetMethod, args, mInterpreter);
