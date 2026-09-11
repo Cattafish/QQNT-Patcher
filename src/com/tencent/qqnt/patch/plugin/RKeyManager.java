@@ -1,7 +1,8 @@
 package com.tencent.qqnt.patch.plugin;
 
 import com.tencent.qqnt.patch.PLog;
-import java.io.ByteArrayOutputStream;
+import com.tencent.qqnt.patch.modules.AutoRemarkApkModule;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -20,6 +21,9 @@ public class RKeyManager {
     public static void onDispatchRespMsg(Object msfMessagePair) {
         if (msfMessagePair == null) return;
         try {
+            // 联动处理上传 APK 防 .1 污染
+            AutoRemarkApkModule.onDispatchRespMsg(msfMessagePair);
+
             Class<?> pairClz = msfMessagePair.getClass();
             Field fromMsgField = pairClz.getField("fromServiceMsg");
             Object fromServiceMsg = fromMsgField.get(msfMessagePair);
@@ -44,7 +48,6 @@ public class RKeyManager {
             byte[] data = new byte[buf.length - offset];
             System.arraycopy(buf, offset, data, 0, data.length);
 
-            // 搜索含有 rkey 的两组参数串 (好友与群)
             String content = new String(data, StandardCharsets.ISO_8859_1);
             int idx1 = content.indexOf("&rkey=");
             if (idx1 != -1) {

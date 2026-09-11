@@ -1,5 +1,6 @@
 package android.content;
 
+import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
 import java.io.File;
@@ -20,4 +21,5 @@ public class Context {
     public File[] getExternalMediaDirs() { return null; }
     public Context getApplicationContext() { return this; }
     public Object getSystemService(String name) { return null; }
+    public PackageManager getPackageManager() { return null; }
 }

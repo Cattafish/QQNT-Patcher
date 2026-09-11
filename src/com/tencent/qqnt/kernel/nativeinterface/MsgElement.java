@@ -4,5 +4,6 @@ public class MsgElement {
     public int elementType;
     public TextElement textElement;
     public PicElement picElement;
+    public FileElement fileElement;
     public byte[] extBufForUI;
 }
