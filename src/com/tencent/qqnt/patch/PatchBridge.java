@@ -1,12 +1,11 @@
 package com.tencent.qqnt.patch;
 
+import android.view.View;
 import com.tencent.qqnt.kernel.nativeinterface.IKernelMsgListener;
 import com.tencent.qqnt.kernel.nativeinterface.IQQNTWrapperSession;
 import com.tencent.qqnt.kernel.nativeinterface.MsgElement;
 import com.tencent.qqnt.kernel.nativeinterface.MsgRecord;
-import com.tencent.qqnt.kernel.nativeinterface.RecentContactInfo;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -19,16 +18,12 @@ public class PatchBridge {
         return ConfigManager.isModuleEnabled("tablet_mode", false);
     }
 
-    /**
-     * ★ 手术刀核心 1：拦截实时消息 MsgNotifyItem
-     */
     public static boolean shouldDropMsgNotify(Object msgNotifyItemObj) {
         if (msgNotifyItemObj == null) return false;
         if (!ConfigManager.isModuleEnabled("block_at_all_notify", true)) return false;
         try {
             Class<?> dClz = Class.forName("com.tencent.qqnt.notification.util.d");
-            Field aField = dClz.getField("a");
-            Object dInstance = aField.get(null);
+            Object dInstance = dClz.getField("a").get(null);
             Method aMethod = dClz.getMethod("a", Class.forName("com.tencent.qqnt.kernel.nativeinterface.MsgNotifyItem"));
             Object recentContactInfo = aMethod.invoke(dInstance, msgNotifyItemObj);
             return shouldDropRecentContact(recentContactInfo);
@@ -37,9 +32,6 @@ public class PatchBridge {
         }
     }
 
-    /**
-     * ★ 手术刀核心 2：纯位运算判定 (严防误杀单人@我)
-     */
     public static boolean shouldDropRecentContact(Object recentContactInfoObj) {
         if (recentContactInfoObj == null) return false;
         if (!ConfigManager.isModuleEnabled("block_at_all_notify", true)) return false;
@@ -48,12 +40,10 @@ public class PatchBridge {
             int chatType = clz.getField("chatType").getInt(recentContactInfoObj);
             int atType = clz.getField("atType").getInt(recentContactInfoObj);
 
-            // 仅对群聊消息生效 (chatType == 2)
             if (chatType == 2) {
-                boolean isAtAll = (atType & 1) != 0; // 第0位：@全体成员
-                boolean isAtMe  = (atType & 4) != 0; // 第2位：定向 @我
+                boolean isAtAll = (atType & 1) != 0;
+                boolean isAtMe  = (atType & 4) != 0;
 
-                // ★ 纯 @全体成员 且 没有 @我 时才丢弃通知
                 if (isAtAll && !isAtMe) {
                     PLog.i("NotifyBlock", "命中静默：丢弃纯 @全体成员 实时通知 (atType=" + atType + ")");
                     return true;
@@ -64,6 +54,26 @@ public class PatchBridge {
         }
         return false;
     }
+
+    // =========================================================================
+    // 群文件下载次数 Smali 外部桥梁
+    // =========================================================================
+
+    public static void handleGroupFileList(Object fileListObj, Object responseObj) {
+        com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleGroupFileList(fileListObj, responseObj);
+    }
+
+    public static void handleTroopFileGetView(View view, Object adapter, int position) {
+        com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleTroopFileGetView(view, adapter, position);
+    }
+
+    public static String appendDownloadCountToStatusText(String originalStatus, Object lr5eObj) {
+        return com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.appendDownloadCountToStatusText(originalStatus, lr5eObj);
+    }
+
+    // =========================================================================
+    // 核心生命周期与消息监听
+    // =========================================================================
 
     public static byte[] handleMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
         ConfigManager.triggerColdStartUpdateCheck();

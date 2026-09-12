@@ -399,6 +399,12 @@ def main():
     if dyn_setting_rule:
         all_rules.append(dyn_setting_rule)
         log("OK", f"-> 设置入口匹配: [{dyn_setting_rule['name']}]")
+
+    # 动态推导群文件下载次数规则
+    dyn_file_rules = rules.get_dynamic_group_file_rules(dex_data_dict)
+    for r in dyn_file_rules:
+        all_rules.append(r)
+        log("OK", f"-> 群文件下载次数动态匹配: [{r['name']}]")
         
     dyn_tablet_rule = rules.get_dynamic_tablet_rule_fast(dex_data_dict)
     if dyn_tablet_rule:

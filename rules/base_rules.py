@@ -193,5 +193,18 @@ BASE_RULES = [
     return-object v0
     :cond_pass_y
 """
+    },
+    {
+        "name": "经典群文件列表显示下载次数 (TroopFileShowAdapter.getView)",
+        "target_class": "Lcom/tencent/mobileqq/troop/file/data/TroopFileShowAdapter;",
+        "target_method": "getView(ILandroid/view/View;Landroid/view/ViewGroup;)Landroid/view/View;",
+        "type": "REGEX_REPLACE",
+        "regex": r"return-object\s+([vp]\d+)(?=\s*(?:\.end\s+method|$))",
+        "smali": """
+    move-object/16 v0, \\1
+    move-object/16 v1, p0
+    move/16 v2, p1
+    invoke-static {v0, v1, v2}, Lcom/tencent/qqnt/patch/PatchBridge;->handleTroopFileGetView(Landroid/view/View;Ljava/lang/Object;I)V
+    return-object v0"""
     }
 ]

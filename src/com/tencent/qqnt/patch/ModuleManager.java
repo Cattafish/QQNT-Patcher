@@ -23,6 +23,7 @@ public class ModuleManager {
         register(new com.tencent.qqnt.patch.modules.TabletModeModule());
         register(new com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule());
         register(new com.tencent.qqnt.patch.modules.AutoRemarkApkModule());
+        register(new com.tencent.qqnt.patch.modules.ShowDownloadTimesModule());
     }
 
     public static void register(IPatchModule module) {
