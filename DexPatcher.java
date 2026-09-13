@@ -222,7 +222,20 @@ public class DexPatcher {
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
                 String javaReplacement = rule.smali.replace("\\1", "$1").replace("\\2", "$2").replace("\\3", "$3");
-                String replacedBody = Pattern.compile(rule.regex).matcher(mBody).replaceAll(javaReplacement);
+                
+                // ★ 新增：调试可视化：统计并打印实际替换命中次数
+                Pattern rp = Pattern.compile(rule.regex);
+                Matcher rm = rp.matcher(mBody);
+                int hitCount = 0;
+                while (rm.find()) hitCount++;
+                
+                if (hitCount > 0) {
+                    System.out.println("[DexPatcher] -> 规则 [" + rule.targetMethod.split("\\(")[0] + "] 正则命中 " + hitCount + " 处，注入成功");
+                } else {
+                    System.err.println("[WARN] -> 规则 [" + rule.targetMethod.split("\\(")[0] + "] 正则命中 0 处，未发生替换! 正则: " + rule.regex);
+                }
+
+                String replacedBody = rp.matcher(mBody).replaceAll(javaReplacement);
                 methodMatcher.appendReplacement(sb, Matcher.quoteReplacement(replacedBody));
             }
             methodMatcher.appendTail(sb);

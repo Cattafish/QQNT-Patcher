@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""全套反外挂、防篡改、风控对齐规则 (全动态语义扫描，零混淆硬编码版)"""
+"""全套反外挂、防篡改、风控对齐规则"""
 
 import struct
 from .stubs import stub_void, stub_ret
@@ -9,7 +9,7 @@ def build_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
     sec_rules = []
     parsers = [FastDexParser(v) for v in dex_data_dict.values() if len(v) >= 0x70 and v[:4] == b'dex\n']
 
-    # 1. 动态嗅探主查签 A (ctsz.m) -> 掏空 d() 与 a()
+    # 1. 动态嗅探主查签 A (ctsz.m)
     for p in parsers:
         for cls_name, cls_idx in p.find_classes_referencing_type_strictly("Lcom/tencent/ims/signature$SignatureReport;"):
             for m_name, proto, _, _, _ in p.get_class_methods(cls_idx):
@@ -18,7 +18,7 @@ def build_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
                 elif proto == "(Ljava/lang/Object;Ljava/lang/Object;)V":
                     sec_rules.append(stub_void(cls_name, f"{m_name}(Ljava/lang/Object;Ljava/lang/Object;)V", regs=3, name=f"阻断查签回调 A ({cls_name}->{m_name})"))
 
-    # 2. 动态嗅探主查签 B (mezs.a) -> 掏空 d(Z) 与 b(String)
+    # 2. 动态嗅探主查签 B (mezs.a)
     for p in parsers:
         for cls_name, cls_idx in p.find_classes_referencing_string_strictly("SecMd5Entry"):
             for m_name, proto, _, _, _ in p.get_class_methods(cls_idx):
@@ -27,7 +27,7 @@ def build_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
                 elif proto == "(Ljava/lang/String;)V":
                     sec_rules.append(stub_void(cls_name, f"{m_name}(Ljava/lang/String;)V", regs=2, name=f"阻断主查签 B 回调 ({cls_name}->{m_name})"))
 
-    # 3. 动态嗅探完整性打击器 (MSFIntChkStrike) -> 掏空 exec
+    # 3. 动态嗅探完整性打击器 (MSFIntChkStrike)
     for p in parsers:
         for cls_name, cls_idx in p.find_classes_referencing_string_strictly("strike_result"):
             for m_name, proto, _, _, _ in p.get_class_methods(cls_idx):
@@ -93,7 +93,7 @@ def build_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
                             ))
             break
 
-    # ★ 7. 动态嗅探 FEKit 外挂、ClassLoader 与内存 Dex 探针 (原 fe/utils/a，自适应混淆名)
+    # 7. 动态嗅探 FEKit 外挂、ClassLoader 与内存 Dex 探针
     for p in parsers:
         for cls_name, cls_idx in p.find_classes_referencing_string_strictly("Err Code: 101"):
             for m_name, proto, _, _, access_flags in p.get_class_methods(cls_idx):
@@ -106,20 +106,7 @@ def build_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
                         name=f"动态致盲 FEKit 环境与外挂检测 ({cls_name}->{m_name})"
                     ))
 
-    # ★ 8. 动态嗅探启动期代码扫描任务 (原 startup/task/p，自适应混淆名)
-    for p in parsers:
-        for cls_name, cls_idx in p.find_classes_referencing_string_strictly("unusedcodecheck"):
-            if "startup/task" in cls_name:
-                for m_name, proto, _, _, _ in p.get_class_methods(cls_idx):
-                    if proto == "(Landroid/content/Context;)V":
-                        sec_rules.append(stub_void(
-                            cls_name,
-                            f"{m_name}(Landroid/content/Context;)V",
-                            regs=2,
-                            name=f"动态休眠代码防篡改扫描 ({cls_name}->{m_name})"
-                        ))
-
-    # ★ 9. 动态嗅探涉诈敏感消息本地扫描 (原 mqp/app/sec/c，自适应混淆名)
+    # 8. 动态嗅探涉诈敏感消息本地扫描
     for p in parsers:
         for i in range(p.class_defs_size):
             c_idx = struct.unpack_from('<I', p.data, p.class_defs_off + i * 32)[0]
@@ -135,7 +122,7 @@ def build_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
                             name=f"动态静默敏感消息涉诈扫描 ({cls_name}->{m_name})"
                         ))
 
-    # ★ 10. 动态嗅探官方原版 APK MD5 计算器 (原 mdm/a，自适应混淆名)
+    # 9. 动态嗅探官方原版 APK MD5 计算器
     if orig_apk_md5:
         for p in parsers:
             for i in range(p.class_defs_size):
@@ -152,51 +139,45 @@ def build_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
                                 name=f"动态固化官方原版 APK MD5 ({cls_name}->{m_name})"
                             ))
 
-    # 11. 纯正官方明确公开类与常量规则（非混淆名，永久稳定）
+    # 10. ★ 全动态定位 AntEst 定时器方法 (包含 0x05265c00 即 \x00\x5c\x26\x05 的方法)
+    antest_cls = "Lcom/tencent/qqprotect/xps/core/AntEst;"
+    for p in parsers:
+        c_idx = p.find_class_index(antest_cls)
+        if c_idx != -1:
+            for m_name, proto_desc, is_virt, code_off, access_flags in p.get_class_methods(c_idx):
+                if code_off != 0 and code_off + 16 < len(p.data):
+                    insns_size = struct.unpack_from('<I', p.data, code_off + 12)[0]
+                    insns = p.data[code_off + 16 : code_off + 16 + insns_size * 2]
+                    if b"\x00\x5c\x26\x05" in insns:
+                        target_m = f"{m_name}{proto_desc}"
+                        sec_rules.append({
+                            "name": f"极化 AntEst 定时器 (动态定位: {m_name})",
+                            "target_class": antest_cls,
+                            "target_method": target_m,
+                            "type": "REGEX_REPLACE",
+                            "regex": r"const-wide/32\s+([vp]\d+),\s+0x5265c00",
+                            "smali": "const-wide \\1, 0x7dba8218000L"
+                        })
+                        break
+            break
+
+    # 11. 纯正官方明确公开类与常量规则
     static_rules = [
-        # 启动自检 -> return 7 (DONE)
         stub_ret("Lcom/tencent/mobileqq/app/automator/step/SignatureScan;", "doStep()I", "const/4 v0, 0x7\n    return v0", name="旁路启动自检 SignatureScan"),
         stub_ret("Lcom/tencent/mobileqq/app/automator/step/CheckSafeCenterConfig;", "doStep()I", "const/4 v0, 0x7\n    return v0", name="旁路启动自检 CheckSafeCenterConfig"),
-        
-        # 风控信道 & 本地安全扫描 -> return false
         stub_ret("Lcom/tencent/mobileqq/dt/api/impl/QSecChannelImpl;", "reportEnable()Z", "const/4 v0, 0\n    return v0", name="强制关闭风控信道"),
         stub_ret("Lcom/tencent/mobileqq/app/QQAppInterface;", "isNeedSecurityScan()Z", "const/4 v0, 0\n    return v0", name="写死关闭本地安全扫描"),
-        
-        # 阻断内存篡改转储
         stub_void("Lcom/tencent/mobileqq/perf/memory/dump/MemoryFile;", "b()V", is_private=True, regs=1, name="阻断内存篡改转储"),
-        
-        # 灯塔硬件指纹脱敏
         stub_void("Lcom/tencent/mobileqq/statistics/QQBeaconReport;", "setBeaconPrivacyInfo()V", is_static=True, regs=1, name="阻断灯塔 Beacon 硬件指纹收集"),
-        
-        # 通道风控单条与批量上报拦截 (保持 public static)
         stub_ret("Lcom/tencent/mobileqq/channel/ChannelReport;", "isReportOnceOfDay(Ljava/lang/String;)Z", "const/4 v0, 0\n    return v0", is_static=True, name="禁用通道风控周期判定"),
         stub_void("Lcom/tencent/mobileqq/channel/ChannelReport;", "commonReport(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)V", is_static=True, regs=4, name="阻断通道单条风控上报"),
         stub_void("Lcom/tencent/mobileqq/channel/ChannelReport;", "batchCommonReport(Ljava/lang/String;[Ljava/lang/String;[[Ljava/lang/String;)V", is_static=True, regs=4, name="阻断通道批量风控上报"),
-        
-        # 安装包物理路径脱敏
         stub_ret("Lcom/tencent/mobileqq/app/qfix/ApplicationDelegate;", "getPackageCodePath()Ljava/lang/String;", "const/4 v0, 0\n    return-object v0", name="脱敏安装包物理路径"),
-        
-        # 极化统一云控拉取间隔
         stub_ret("Lcom/tencent/mobileqq/unitedconfig_android/api/impl/UnitedConfigManagerImpl;", "getUpdateInterval()J", "const-wide v0, 0xc92a69c000L\n    return-wide v0", is_private=True, regs=3, name="极化统一云控拉取间隔"),
-        
-        # 阻断密码安全配置查询
         stub_ret("Lcom/tencent/mobileqq/app/identity/impl/SafeApiImpl;", "getUpdatePwdUrl(Ljava/lang/String;)Ljava/lang/String;", "const/4 v0, 0\n    return-object v0", regs=3, name="阻断安全中心密码配置查询"),
-        
-        # 极化 AntEst 定时器
-        {
-            "name": "极化 AntEst 定时器",
-            "target_class": "Lcom/tencent/qqprotect/xps/core/AntEst;",
-            "target_method": "d",
-            "type": "REGEX_REPLACE",
-            "regex": r"const-wide/32\s+([vp]\d+),\s+0x5265c00",
-            "smali": "const-wide \\1, 0x7dba8218000L"
-        },
-
-        # 阻断 Ganliang 投屏监控与防截屏黑屏
         stub_void("Lcom/tencent/qqprotect/ganliang/Ganliang;", "h()V", regs=1, name="阻断 Ganliang 投屏探测与防截屏黑屏")
     ]
 
-    # 官方签名 Hash 伪装 (SecUtil 为官方未混淆基础工具类)
     if orig_sig_md5:
         static_rules.append(
             stub_ret(
