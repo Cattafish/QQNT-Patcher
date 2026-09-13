@@ -59,6 +59,14 @@ public class PatchBridge {
     // 群文件下载次数 Smali 外部桥梁
     // =========================================================================
 
+    public static void handleGroupFileListResponse(Object lg4jObj) {
+        com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleGroupFileListResponse(lg4jObj);
+    }
+
+    public static void handleTroopFileInfo(Object troopFileInfoObj) {
+        com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleTroopFileInfo(troopFileInfoObj);
+    }
+
     public static void handleGroupFileList(Object fileListObj, Object responseObj) {
         com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleGroupFileList(fileListObj, responseObj);
     }
@@ -67,8 +75,8 @@ public class PatchBridge {
         com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleTroopFileGetView(view, adapter, position);
     }
 
-    public static String appendDownloadCountToStatusText(String originalStatus, Object lr5eObj) {
-        return com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.appendDownloadCountToStatusText(originalStatus, lr5eObj);
+    public static String appendDownloadCountToStatusText(String originalStatus, Object fileItemObj) {
+        return com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.appendDownloadCountToStatusText(originalStatus, fileItemObj);
     }
 
     // =========================================================================
