@@ -12,6 +12,7 @@ import struct
 import time
 import hashlib
 import rules
+import native_patcher
 
 TOOLS_DIR = os.path.abspath("./tools")
 BAKSMALI_JAR = os.path.join(TOOLS_DIR, "baksmali.jar")
@@ -63,7 +64,6 @@ def run_cmd(cmd, cwd=None):
     return ret.stdout.decode('utf-8', errors='ignore')
 
 def run_cmd_stream(cmd, cwd=None):
-    """实时流式执行器：逐行刷新终端，实时查看进度"""
     p = subprocess.Popen(
         cmd,
         shell=True,
@@ -89,7 +89,6 @@ def run_cmd_stream(cmd, cwd=None):
     return p.returncode
 
 def ensure_smali_jars():
-    """依赖检查：只要文件不存在或小于等于 1KB，直接 ERROR 并退出"""
     missing_jars = []
     for name, path in REQUIRED_JARS:
         if not os.path.exists(path):
@@ -112,9 +111,7 @@ def ensure_fixed_keystore():
         run_cmd(f"keytool -genkey -v -keystore {shlex.quote(FIXED_KEYSTORE)} -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname 'CN=Android Debug,O=Android,C=US'")
 
 def extract_original_apk_metadata(input_apk):
-    """全自动提取输入官方原版 APK 的全量 MD5 和证书 MD5 指纹"""
     log("INFO", "0. 正在提取官方原包特征指纹...")
-    
     h = hashlib.md5()
     with open(input_apk, "rb") as f:
         while chunk := f.read(65536):
@@ -256,7 +253,6 @@ def dump_batch_tasks(dex_tasks, batch_file):
                 f.write("---SMALI_END---\n")
 
 def print_patch_details(dex_name, rule_list):
-    """打印 Patch 内容详情"""
     print(f"\n\033[1;36m{'='*25} [{dex_name}] 补丁明细 ({len(rule_list)} 项) {'='*25}\033[0m")
     for idx, r in enumerate(rule_list, 1):
         name = r.get("name", "未命名规则")
@@ -279,55 +275,8 @@ def print_patch_details(dex_name, rule_list):
             print(f"     \033[90m│\033[0m {sl}")
         print()
 
-def patch_native_so(input_apk, work_dir):
-    patched_files = []
-    target_entries = ["lib/arm64-v8a/libcodecwrapperV2.so"]
-
-    with zipfile.ZipFile(input_apk, 'r') as zf:
-        namelist = zf.namelist()
-        for entry in target_entries:
-            if entry in namelist:
-                raw_bytes = bytearray(zf.read(entry))
-                patched = False
-
-                pos = 0
-                while True:
-                    idx = raw_bytes.find(b"\x37\x00\x80\x52", pos)
-                    if idx == -1:
-                        break
-
-                    window = raw_bytes[idx : min(len(raw_bytes), idx + 32)]
-                    has_cbz = False
-                    for w_idx in range(0, len(window) - 3, 4):
-                        insn = struct.unpack_from('<I', window, w_idx)[0]
-                        if (insn & 0x7F00001F) == 0x34000017:
-                            has_cbz = True
-                            break
-
-                    if has_cbz:
-                        raw_bytes[idx : idx + 4] = b"\x17\x00\x80\x52"
-                        patched = True
-                        log("OK", f"-> Native SO 查签拦截成功 (特征对齐): {entry} @ 0x{idx:X}")
-                        print(f"   \033[31m[-] 原指令: 37 00 80 52 (mov w23, #1)\033[0m")
-                        print(f"   \033[32m[+] 新指令: 17 00 80 52 (mov w23, #0)\033[0m")
-                        break
-
-                    pos = idx + 4
-
-                if patched:
-                    out_path = os.path.join(work_dir, entry)
-                    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                    with open(out_path, "wb") as f:
-                        f.write(raw_bytes)
-                    patched_files.append((out_path, entry))
-                else:
-                    log("WARN", f"-> 未在 {entry} 中定位到特征跳转，跳过 Native 修补")
-    return patched_files
-
 def main():
     t_start = time.time()
-
-    # 1. 启动前校验 tools 依赖
     ensure_smali_jars()
 
     args = sys.argv[1:]
@@ -347,7 +296,6 @@ def main():
         log("ERR", f"未找到输入 APK 文件: {input_apk}")
         sys.exit(1)
 
-    # 2. 提取官方原包特征指纹
     orig_apk_md5, orig_sig_md5 = extract_original_apk_metadata(input_apk)
 
     work_dir = "./build_cache"
@@ -385,7 +333,6 @@ def main():
 
     all_rules = list(rules.RULES)
 
-    # 动态推导安全规则
     dynamic_sec_rules = rules.get_dynamic_security_rules(
         dex_data_dict,
         orig_apk_md5=orig_apk_md5,
@@ -400,7 +347,6 @@ def main():
         all_rules.append(dyn_setting_rule)
         log("OK", f"-> 设置入口匹配: [{dyn_setting_rule['name']}]")
 
-    # 动态推导群文件下载次数规则
     dyn_file_rules = rules.get_dynamic_group_file_rules(dex_data_dict)
     for r in dyn_file_rules:
         all_rules.append(r)
@@ -454,8 +400,9 @@ def main():
         cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
         run_cmd_stream(cmd)
 
+    # ★ P1 解耦：调用独立的 native_patcher 模块
     log("INFO", "3.1 正在扫描底层 Native SO 安全探针...")
-    patched_so_files = patch_native_so(input_apk, work_dir)
+    patched_so_files = native_patcher.patch_native_so(input_apk, work_dir, log_func=log)
 
     del dex_data_dict
     t_phase3 = round(time.time() - t0, 2)
@@ -496,7 +443,6 @@ def main():
         shutil.copyfile(bsh_standalone_dex, os.path.join(target_assets_dir, "bsh.dex"))
         zip_args.append(shlex.quote("assets/bsh.dex"))
 
-    # ★ 核心优化：自动全量打包 assets/ 目录下的所有文件 (zzz_icon.png, script_icon.png 等)
     assets_src_dir = "assets"
     if os.path.exists(assets_src_dir):
         target_assets_dir = os.path.join(inject_dir, "assets")
