@@ -128,13 +128,13 @@ BASE_RULES = [
 """
     },
     {
-        "name": "图片 RKey 自动监听",
+        "name": "底层 MSF 响应消息统一分发总线 (dispatchRespMsg)",
         "target_class": "Lmqq/app/msghandle/MsgRespHandler;",
         "target_method": "dispatchRespMsg(Lmqq/app/MobileQQ;Lcom/tencent/mobileqq/msf/sdk/MsfMessagePair;Lcom/tencent/mobileqq/msf/sdk/MsfRespHandleUtil;Lcom/tencent/mobileqq/msf/sdk/MsfServiceSdk;)V",
         "type": "INSERT_BEFORE",
         "smali": """
     move-object/16 v0, p2
-    invoke-static {v0}, Lcom/tencent/qqnt/patch/plugin/RKeyManager;->onDispatchRespMsg(Ljava/lang/Object;)V
+    invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleDispatchRespMsg(Ljava/lang/Object;)V
 """
     },
     {

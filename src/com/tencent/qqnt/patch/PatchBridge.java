@@ -7,7 +7,6 @@ import com.tencent.qqnt.kernel.nativeinterface.MsgElement;
 import com.tencent.qqnt.kernel.nativeinterface.MsgRecord;
 
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
@@ -18,53 +17,33 @@ public class PatchBridge {
         return ConfigManager.isModuleEnabled("tablet_mode", false);
     }
 
+    // =========================================================================
+    // 通知静默模块代理
+    // =========================================================================
     public static boolean shouldDropMsgNotify(Object msgNotifyItemObj) {
-        if (msgNotifyItemObj == null) return false;
-        if (!ConfigManager.isModuleEnabled("block_at_all_notify", true)) return false;
-        try {
-            Class<?> dClz = Class.forName("com.tencent.qqnt.notification.util.d");
-            Object dInstance = dClz.getField("a").get(null);
-            Method aMethod = dClz.getMethod("a", Class.forName("com.tencent.qqnt.kernel.nativeinterface.MsgNotifyItem"));
-            Object recentContactInfo = aMethod.invoke(dInstance, msgNotifyItemObj);
-            return shouldDropRecentContact(recentContactInfo);
-        } catch (Throwable t) {
-            return false;
-        }
+        return com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule.shouldDropMsgNotify(msgNotifyItemObj);
     }
 
     public static boolean shouldDropRecentContact(Object recentContactInfoObj) {
-        if (recentContactInfoObj == null) return false;
-        if (!ConfigManager.isModuleEnabled("block_at_all_notify", true)) return false;
-        try {
-            Class<?> clz = recentContactInfoObj.getClass();
-            int chatType = clz.getField("chatType").getInt(recentContactInfoObj);
-            int atType = clz.getField("atType").getInt(recentContactInfoObj);
-
-            if (chatType == 2) {
-                boolean isAtAll = (atType & 1) != 0;
-                boolean isAtMe  = (atType & 4) != 0;
-
-                if (isAtAll && !isAtMe) {
-                    PLog.i("NotifyBlock", "命中静默：丢弃纯 @全体成员 实时通知 (atType=" + atType + ")");
-                    return true;
-                }
-            }
-        } catch (Throwable t) {
-            PLog.e("NotifyBlock", "判断失败", t);
-        }
-        return false;
+        return com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule.shouldDropRecentContact(recentContactInfoObj);
     }
 
     // =========================================================================
-    // 群文件下载次数 Smali 外部桥梁
+    // MSF 底层长连接响应消息总线分发 (取代模块间私相授受)
     // =========================================================================
-
-    public static void handleGroupFileListResponse(Object lg4jObj) {
-        com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleGroupFileListResponse(lg4jObj);
+    public static void handleDispatchRespMsg(Object msfMessagePair) {
+        if (msfMessagePair == null) return;
+        // 独立分发给图片 RKey 模块
+        com.tencent.qqnt.patch.plugin.RKeyManager.onDispatchRespMsg(msfMessagePair);
+        // 独立分发给上传 APK 防 .1 污染模块
+        com.tencent.qqnt.patch.modules.AutoRemarkApkModule.onDispatchRespMsg(msfMessagePair);
     }
 
-    public static void handleTroopFileInfo(Object troopFileInfoObj) {
-        com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleTroopFileInfo(troopFileInfoObj);
+    // =========================================================================
+    // 群文件下载次数外部桥梁
+    // =========================================================================
+    public static void handleGroupFileListResponse(Object responseObj) {
+        com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleGroupFileListResponse(responseObj);
     }
 
     public static void handleGroupFileList(Object fileListObj, Object responseObj) {
@@ -82,7 +61,6 @@ public class PatchBridge {
     // =========================================================================
     // 核心生命周期与消息监听
     // =========================================================================
-
     public static byte[] handleMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
         ConfigManager.triggerColdStartUpdateCheck();
         if (session != null) {

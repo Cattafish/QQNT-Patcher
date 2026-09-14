@@ -8,14 +8,11 @@ import android.os.Bundle;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.view.View;
-import android.widget.CompoundButton;
 
 import com.tencent.qqnt.patch.plugin.PluginManager;
 
-import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,13 +24,8 @@ public class ZzzSettingFragment {
     public static final String PAGE_CORE = "page_core";
     public static final String PAGE_PLUGINS = "page_plugins";
 
-    public static void startCore(Context context) {
-        start(context, PAGE_CORE);
-    }
-
-    public static void startPlugins(Context context) {
-        start(context, PAGE_PLUGINS);
-    }
+    public static void startCore(Context context) { start(context, PAGE_CORE); }
+    public static void startPlugins(Context context) { start(context, PAGE_PLUGINS); }
 
     public static void start(Context context, String pageType) {
         try {
@@ -106,7 +98,7 @@ public class ZzzSettingFragment {
                 List<Object> pluginItems = new ArrayList<>();
                 List<PluginManager.PluginItem> allPlugins = PluginManager.scanAllPlugins(activity);
 
-                pluginItems.add(createNativeClickableItem(cl, "重新扫描与重载全部脚本", "刷新", true, false, v -> {
+                pluginItems.add(NativeSettingHelper.createClickable(cl, "重新扫描与重载全部脚本", "刷新", true, false, v -> {
                     ToastHelper.show(activity, "正在重载全部脚本...");
                     PluginManager.reloadAll(activity, () -> {
                         if (!activity.isFinishing() && !activity.isDestroyed()) {
@@ -117,13 +109,13 @@ public class ZzzSettingFragment {
                 }));
 
                 if (allPlugins.isEmpty()) {
-                    pluginItems.add(createNativeTextItem(cl, "暂无外部脚本", "放入zzz/plugins"));
+                    pluginItems.add(NativeSettingHelper.createTextItem(cl, "暂无外部脚本", "放入zzz/plugins"));
                 } else {
                     for (PluginManager.PluginItem item : allPlugins) {
                         final String pId = item.id;
                         final String pName = item.name;
 
-                        pluginItems.add(createNativeSwitchItem(
+                        pluginItems.add(NativeSettingHelper.createSwitch(
                                 cl, pName + " (" + pId + ")", item.isEnabled,
                                 (btn, checked) -> {
                                     ToastHelper.show(activity, pName + (checked ? " 正在启动..." : " 正在停止..."));
@@ -140,7 +132,7 @@ public class ZzzSettingFragment {
                             for (Map.Entry<String, String> entry : item.menuItems.entrySet()) {
                                 final String actionName = entry.getKey();
                                 final String actionCallback = entry.getValue();
-                                pluginItems.add(createNativeClickableItem(
+                                pluginItems.add(NativeSettingHelper.createClickable(
                                         cl, "  ↳ " + actionName, "打开界面", true, false,
                                         v -> PluginManager.invokePluginMenu(pId, actionCallback, 2, "", actionName)
                                 ));
@@ -148,7 +140,7 @@ public class ZzzSettingFragment {
                         }
                     }
                 }
-                groups.add(createNativeGroup(cl, "已安装插件 (" + allPlugins.size() + ")", centeredItalicFooter, pluginItems));
+                groups.add(NativeSettingHelper.createGroup(cl, "已安装插件 (" + allPlugins.size() + ")", centeredItalicFooter, pluginItems));
 
             } else {
                 // =====================================================
@@ -160,7 +152,7 @@ public class ZzzSettingFragment {
                 for (IPatchModule module : ModuleManager.getModules()) {
                     if (!module.showInSettings()) continue;
                     final IPatchModule m = module;
-                    funcItems.add(createNativeSwitchItem(
+                    funcItems.add(NativeSettingHelper.createSwitch(
                             cl, m.getName(), m.isEnabled(),
                             (btn, checked) -> {
                                 m.setEnabled(checked);
@@ -168,34 +160,32 @@ public class ZzzSettingFragment {
                             }
                     ));
                 }
-                groups.add(createNativeGroup(cl, "核心功能 (" + funcItems.size() + " 个模块)", "", funcItems));
+                groups.add(NativeSettingHelper.createGroup(cl, "核心功能 (" + funcItems.size() + " 个模块)", "", funcItems));
 
                 // 2. 高级与调试
                 List<Object> advancedItems = new ArrayList<>();
-                advancedItems.add(createNativeSwitchItem(
+                advancedItems.add(NativeSettingHelper.createSwitch(
                         cl, "调试日志输出 (Logcat)", ConfigManager.isDebugLogEnabled(),
                         (btn, checked) -> {
                             ConfigManager.setDebugLogEnabled(checked);
                             ToastHelper.show(activity, "调试日志" + (checked ? " 已开启" : " 已关闭"));
                         }
                 ));
-                advancedItems.add(createNativeClickableItem(
+                advancedItems.add(NativeSettingHelper.createClickable(
                         cl, "实时运行日志", "查看 (" + PLog.getBufferCount() + "条)", true, false,
                         v -> PLog.showLogDialog(activity)
                 ));
-                groups.add(createNativeGroup(cl, "高级与调试", "", advancedItems));
+                groups.add(NativeSettingHelper.createGroup(cl, "高级与调试", "", advancedItems));
 
                 // 3. 关于
                 List<Object> aboutItems = new ArrayList<>();
-                aboutItems.add(createNativeTextItem(cl, "当前版本", ConfigManager.VERSION));
+                aboutItems.add(NativeSettingHelper.createTextItem(cl, "当前版本", ConfigManager.VERSION));
 
                 boolean hasNew = ConfigManager.hasNewVersion();
                 String updateText = hasNew ? "有新版本可用" : "已是最新版本";
-                boolean showArrow = hasNew;
 
-                // ★ 准确传递 hasNew 作为 showRedDot 参数！
-                aboutItems.add(createNativeClickableItem(
-                        cl, "检查更新", updateText, showArrow, hasNew,
+                aboutItems.add(NativeSettingHelper.createClickable(
+                        cl, "检查更新", updateText, hasNew, hasNew,
                         v -> UpdateHelper.checkUpdate(activity, () -> {
                             if (!activity.isFinishing() && !activity.isDestroyed()) {
                                 renderSettingsList(fragment, activity, cl, pageType);
@@ -203,7 +193,7 @@ public class ZzzSettingFragment {
                         })
                 ));
 
-                aboutItems.add(createNativeClickableItem(cl, "Telegram 频道", "加入", true, false, v -> {
+                aboutItems.add(NativeSettingHelper.createClickable(cl, "Telegram 频道", "加入", true, false, v -> {
                     try {
                         Intent tgIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.TG_CHANNEL_URL));
                         tgIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -212,7 +202,7 @@ public class ZzzSettingFragment {
                         ToastHelper.show(activity, "打开链接失败: " + t.getMessage());
                     }
                 }));
-                aboutItems.add(createNativeClickableItem(cl, "GitHub 仓库", "前往", true, false, v -> {
+                aboutItems.add(NativeSettingHelper.createClickable(cl, "GitHub 仓库", "前往", true, false, v -> {
                     try {
                         Intent ghIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(ConfigManager.GITHUB_REPO_URL));
                         ghIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -222,23 +212,12 @@ public class ZzzSettingFragment {
                     }
                 }));
 
-                groups.add(createNativeGroup(cl, "关于", centeredItalicFooter, aboutItems));
+                groups.add(NativeSettingHelper.createGroup(cl, "关于", centeredItalicFooter, aboutItems));
             }
 
-            Class<?> groupClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.Group");
-            Object groupArray = Array.newInstance(groupClass, groups.size());
-            for (int i = 0; i < groups.size(); i++) {
-                Array.set(groupArray, i, groups.get(i));
-            }
+            // 统一调用 Helper 提交给 Adapter
+            NativeSettingHelper.applyGroupsToAdapter(adapter, groups, cl);
 
-            for (Method m : adapter.getClass().getMethods()) {
-                Class<?>[] pts = m.getParameterTypes();
-                if (pts.length == 1 && pts[0].isArray() &&
-                    pts[0].getComponentType().getName().endsWith("Group")) {
-                    m.invoke(adapter, new Object[]{groupArray});
-                    break;
-                }
-            }
         } catch (Throwable ignored) {}
     }
 
@@ -269,148 +248,5 @@ public class ZzzSettingFragment {
         } catch (Throwable t) {
             return text;
         }
-    }
-
-    private static Object createNativeSwitchItem(ClassLoader cl, String title, boolean isChecked, CompoundButton.OnCheckedChangeListener listener) throws Exception {
-        Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
-        Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
-        Object leftObj = xbdConst.newInstance(title);
-
-        Class<?> xcfClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$f");
-        Object rightObj = newInstanceSmart(xcfClass, new Object[]{isChecked, listener, true});
-
-        Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
-        Constructor<?> xConst = xClass.getConstructor(
-                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b"),
-                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c")
-        );
-        return xConst.newInstance(leftObj, rightObj);
-    }
-
-    private static Object createNativeTextItem(ClassLoader cl, String title, String rightText) throws Exception {
-        Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
-        Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
-        Object leftObj = xbdConst.newInstance(title);
-
-        Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
-        Object rightObj = newInstanceSmart(xcgClass, new Object[]{rightText, false, false});
-
-        Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
-        Constructor<?> xConst = xClass.getConstructor(
-                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b"),
-                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c")
-        );
-        return xConst.newInstance(leftObj, rightObj);
-    }
-
-    private static Object createNativeClickableItem(ClassLoader cl, String title, String rightText, boolean showArrow, boolean showRedDot, View.OnClickListener listener) throws Exception {
-        Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
-        Constructor<?> xbdConst = xbdClass.getConstructor(CharSequence.class);
-        Object leftObj = xbdConst.newInstance(title);
-
-        Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
-        // ★ 核心修复：第三个参数直接传 showRedDot，让 x$c$g 原生激活红点标志！
-        Object rightObj = newInstanceSmart(xcgClass, new Object[]{rightText, showArrow, showRedDot});
-
-        // ★ 再次双重确保调用 rightObj.g(showRedDot)
-        if (rightObj != null) {
-            try {
-                Method gMethod = xcgClass.getMethod("g", boolean.class);
-                gMethod.invoke(rightObj, showRedDot);
-            } catch (Throwable ignored) {}
-        }
-
-        Class<?> xClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x");
-        Constructor<?> xConst = xClass.getConstructor(
-                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b"),
-                cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c")
-        );
-        Object item = xConst.newInstance(leftObj, rightObj);
-
-        if (listener != null) {
-            for (Method m : item.getClass().getMethods()) {
-                Class<?>[] pts = m.getParameterTypes();
-                if (pts.length == 1 && pts[0] == View.OnClickListener.class) {
-                    m.invoke(item, listener);
-                    break;
-                }
-            }
-        }
-
-        // ★ 挂载 View 绘制阶段监听，确保 QUIBadge 双保险点亮
-        if (showRedDot) {
-            try {
-                Class<?> gClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.g");
-                Object gProxy = Proxy.newProxyInstance(cl, new Class<?>[]{gClass}, (proxy, method, args) -> {
-                    if ("G".equals(method.getName()) && args != null && args.length == 1 && (args[0] instanceof View)) {
-                        QUIBadgeHelper.attachNativeBadge((View) args[0], rightText, true, showArrow);
-                    }
-                    return null;
-                });
-                for (Method m : item.getClass().getMethods()) {
-                    Class<?>[] pts = m.getParameterTypes();
-                    if ("w".equals(m.getName()) && pts.length == 1 && pts[0] == gClass) {
-                        m.invoke(item, gProxy);
-                        break;
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
-
-        return item;
-    }
-
-    private static Object createNativeGroup(ClassLoader cl, String topTitle, CharSequence bottomFooter, List<Object> items) throws Exception {
-        Class<?> itemBaseClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.a");
-        Object itemArray = Array.newInstance(itemBaseClass, items.size());
-        for (int i = 0; i < items.size(); i++) {
-            Array.set(itemArray, i, items.get(i));
-        }
-
-        Class<?> groupClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.Group");
-        Constructor<?> groupConst = groupClass.getConstructor(CharSequence.class, CharSequence.class, itemArray.getClass());
-        return groupConst.newInstance(topTitle != null ? topTitle : "", bottomFooter != null ? bottomFooter : "", itemArray);
-    }
-
-    private static Object newInstanceSmart(Class<?> clazz, Object[] preferredArgs) {
-        if (clazz == null) return null;
-        Constructor<?>[] constructors = clazz.getDeclaredConstructors();
-        for (Constructor<?> c : constructors) {
-            try {
-                c.setAccessible(true);
-                Class<?>[] paramTypes = c.getParameterTypes();
-                Object[] args = new Object[paramTypes.length];
-
-                for (int i = 0; i < paramTypes.length; i++) {
-                    Class<?> pt = paramTypes[i];
-                    if (i < preferredArgs.length && preferredArgs[i] != null && pt.isAssignableFrom(preferredArgs[i].getClass())) {
-                        args[i] = preferredArgs[i];
-                    } else if (pt == int.class || pt == Integer.class) {
-                        args[i] = (i < preferredArgs.length && preferredArgs[i] instanceof Number)
-                                ? ((Number) preferredArgs[i]).intValue() : 0;
-                    } else if (pt == boolean.class || pt == Boolean.class) {
-                        args[i] = (i < preferredArgs.length && preferredArgs[i] instanceof Boolean)
-                                ? (Boolean) preferredArgs[i] : false;
-                    } else if (pt == long.class || pt == Long.class) {
-                        args[i] = 0L;
-                    } else if (pt == float.class || pt == Float.class) {
-                        args[i] = 0.0f;
-                    } else if (pt == double.class || pt == Double.class) {
-                        args[i] = 0.0d;
-                    } else if (pt == byte.class || pt == Byte.class) {
-                        args[i] = (byte) 0;
-                    } else if (pt == short.class || pt == Short.class) {
-                        args[i] = (short) 0;
-                    } else if (pt == char.class || pt == Character.class) {
-                        args[i] = ' ';
-                    } else {
-                        args[i] = (i < preferredArgs.length) ? preferredArgs[i] : null;
-                    }
-                }
-
-                return c.newInstance(args);
-            } catch (Throwable ignored) {}
-        }
-        return null;
     }
 }

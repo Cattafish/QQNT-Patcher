@@ -1,7 +1,6 @@
 package com.tencent.qqnt.patch.plugin;
 
 import com.tencent.qqnt.patch.PLog;
-import com.tencent.qqnt.patch.modules.AutoRemarkApkModule;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -21,9 +20,6 @@ public class RKeyManager {
     public static void onDispatchRespMsg(Object msfMessagePair) {
         if (msfMessagePair == null) return;
         try {
-            // 联动处理上传 APK 防 .1 污染
-            AutoRemarkApkModule.onDispatchRespMsg(msfMessagePair);
-
             Class<?> pairClz = msfMessagePair.getClass();
             Field fromMsgField = pairClz.getField("fromServiceMsg");
             Object fromServiceMsg = fromMsgField.get(msfMessagePair);
