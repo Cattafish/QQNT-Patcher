@@ -80,80 +80,148 @@ def get_dynamic_tablet_rule_fast(dex_data_dict):
                         }
     return None
 
-def get_dynamic_group_file_rules(dex_data_dict):
-    rules_list = []
+def _method_has_const_string(p, code_off, s_id):
+    """机器指令检查：方法是否真正执行了 const-string 加载指定字符串"""
+    if s_id == -1 or code_off == 0 or code_off + 16 >= len(p.data):
+        return False
+    insns_size = struct.unpack_from('<I', p.data, code_off + 12)[0]
+    insns = p.data[code_off + 16 : code_off + 16 + insns_size * 2]
+    s_16 = struct.pack('<H', s_id) if s_id <= 65535 else None
+    s_32 = struct.pack('<I', s_id)
+    k = 0
+    len_insns = len(insns)
+    while k < len_insns - 1:
+        op = insns[k]
+        if op == 0x1A and k + 4 <= len_insns:
+            if s_16 and insns[k + 2 : k + 4] == s_16: return True
+            k += 4
+            continue
+        elif op == 0x1B and k + 6 <= len_insns:
+            if insns[k + 2 : k + 6] == s_32: return True
+            k += 6
+            continue
+        k += 2
+    return False
 
+def _find_methods_calling_named_method(p, class_idx, target_method_name):
+    """机器指令检查：从底层 Dalvik 机器码查找类中真正调用了 target_method_name 的方法"""
+    s_id = p.find_string_id(target_method_name)
+    if s_id == -1: return []
+    
+    target_m_indices = set()
+    for m_idx in range(p.method_ids_size):
+        name_idx = struct.unpack_from('<I', p.data, p.method_ids_off + m_idx * 8 + 4)[0]
+        if name_idx == s_id:
+            target_m_indices.add(m_idx)
+            
+    if not target_m_indices: return []
+    
+    matched = []
+    for m_name, proto_desc, _, code_off, _ in p.get_class_methods(class_idx):
+        if code_off == 0 or code_off + 16 >= len(p.data): continue
+        insns_size = struct.unpack_from('<I', p.data, code_off + 12)[0]
+        insns = p.data[code_off + 16 : code_off + 16 + insns_size * 2]
+        
+        k = 0
+        len_insns = len(insns)
+        while k < len_insns - 3:
+            op = insns[k]
+            if op in (0x71, 0x77):  # invoke-static 或 invoke-static/range
+                m_ref = struct.unpack_from('<H', insns, k + 2)[0]
+                if m_ref in target_m_indices:
+                    matched.append((m_name, proto_desc, code_off))
+                    break
+            k += 2
+    return matched
+
+def get_dynamic_group_file_rules(dex_data_dict):
+    """
+    全自动动态群文件下载次数规则引擎
+    - 网络回包：动态挂钩 GroupFileListRepo 挂起函数
+    - UI 渲染追加：双通道并存，哪个存在就挂哪个，绝不误抓，0 WARN
+    """
+    rules_list = []
+    
     # =========================================================================
-    # 环节 ①：在 GroupFileListRepo 收到网络回包入口 (k 和 l) 拦截 lg4.j
+    # 1. 网络回包拦截 (GroupFileListRepo -> 查找打印 [syncExtraInfo] 的方法)
     # =========================================================================
     repo_cls = "Lgroup_file/group_file_common/repo/GroupFileListRepo;"
-    repo_proto = "(Ljava/lang/String;Llg4/j;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;"
-
-    for m_name in ["k", "l"]:
-        rules_list.append({
-            "name": f"群文件回包拦截 (GroupFileListRepo->{m_name})",
-            "target_class": repo_cls,
-            "target_method": f"{m_name}{repo_proto}",
-            "type": "INSERT_BEFORE",
-            "smali": """
+    for _, dex_bytes in dex_data_dict.items():
+        if b"GroupFileListRepo" in dex_bytes:
+            p = FastDexParser(dex_bytes)
+            if not p.valid: continue
+            c_idx = p.find_class_index(repo_cls)
+            if c_idx != -1:
+                s_v1 = p.find_string_id("[syncExtraInfo]: start")
+                s_v2 = p.find_string_id("[syncExtraInfoV2]: start")
+                for m_name, proto_desc, _, code_off, _ in p.get_class_methods(c_idx):
+                    if proto_desc.startswith("(Ljava/lang/String;L") and proto_desc.endswith(";Lkotlin/coroutines/Continuation;)Ljava/lang/Object;"):
+                        hit_v1 = _method_has_const_string(p, code_off, s_v1)
+                        hit_v2 = _method_has_const_string(p, code_off, s_v2)
+                        if hit_v1 or hit_v2:
+                            rules_list.append({
+                                "name": f"群文件回包拦截 (GroupFileListRepo->{m_name})",
+                                "target_class": repo_cls,
+                                "target_method": f"{m_name}{proto_desc}",
+                                "type": "INSERT_BEFORE",
+                                "smali": """
     move-object/16 v0, p2
     invoke-static {v0}, Lcom/tencent/qqnt/patch/PatchBridge;->handleGroupFileListResponse(Ljava/lang/Object;)V
 """
-        })
+                            })
 
     # =========================================================================
-    # 环节 ②：动态嗅探群文件 UI 状态文字渲染点 (优先 9.3.60+，兼容 9.2.90)
+    # 2. UI 渲染点 A: 检查 qqfile_common/components/f (9.2.90 主渲染通道)
     # =========================================================================
-    status_rule_added = False
+    old_f_cls = "Lqqfile_common/components/f;"
     for _, dex_bytes in dex_data_dict.items():
-        # A. 适配 9.3.60+ 架构: GroupFileCellSlotProvider->o (入参含 components/e 且返回 qd3/a)
+        if b"qqfile_common/components/f" in dex_bytes:
+            p = FastDexParser(dex_bytes)
+            if not p.valid: continue
+            c_idx = p.find_class_index(old_f_cls)
+            if c_idx != -1:
+                # 只找真正调用了 joinToString$default 的方法 (必定只命中 i，彻底排除 d)
+                calling_methods = _find_methods_calling_named_method(p, c_idx, "joinToString$default")
+                for m_name, proto_desc, _ in calling_methods:
+                    if proto_desc.startswith("(Llr5/e;") or "ZLqqfile_common/data/a;)" in proto_desc:
+                        rules_list.append({
+                            "name": f"群文件状态文字追加 (components.f->{m_name})",
+                            "target_class": old_f_cls,
+                            "target_method": f"{m_name}{proto_desc}",
+                            "type": "REGEX_REPLACE",
+                            "regex": r"(invoke-static/range\s+\{[^}]+\},\s+Lkotlin/collections/CollectionsKt;->joinToString\$default\([^)]+\)Ljava/lang/String;\s+move-result-object\s+([vp]\d+))",
+                            "smali": r"""\1
+    move-object/16 v8, p0
+    invoke-static {\2, v8}, Lcom/tencent/qqnt/patch/PatchBridge;->appendDownloadCountToStatusText(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/String;
+    move-result-object \2"""
+                        })
+                        break
+
+    # =========================================================================
+    # 3. UI 渲染点 B: 检查 GroupFileCellSlotProvider (9.3.60+ 主渲染通道)
+    # =========================================================================
+    slot_cls = "Lgroup_file/group_file_common/abstraction/slot/GroupFileCellSlotProvider;"
+    for _, dex_bytes in dex_data_dict.items():
         if b"GroupFileCellSlotProvider" in dex_bytes:
             p = FastDexParser(dex_bytes)
-            if p.valid:
-                c_idx = p.find_class_index("Lgroup_file/group_file_common/abstraction/slot/GroupFileCellSlotProvider;")
-                if c_idx != -1:
-                    for m_name, proto_desc, _, _, _ in p.get_class_methods(c_idx):
-                        if "Lqqfile_common/components/e;" in proto_desc and proto_desc.endswith(")Lqd3/a;"):
-                            target_method = f"{m_name}{proto_desc}"
-                            rules_list.append({
-                                "name": f"群文件状态文字构造前追加下载次数 (GroupFileCellSlotProvider->{m_name})",
-                                "target_class": "Lgroup_file/group_file_common/abstraction/slot/GroupFileCellSlotProvider;",
-                                "target_method": target_method,
-                                "type": "REGEX_REPLACE",
-                                "regex": r"(invoke-static/range\s+\{[^}]+\},\s+Lkotlin/collections/CollectionsKt;->joinToString\$default\([^)]+\)Ljava/lang/String;\s+move-result-object\s+v2)",
-                                "smali": r"""\1
+            if not p.valid: continue
+            c_idx = p.find_class_index(slot_cls)
+            if c_idx != -1:
+                # 只有真正调用了 joinToString$default 且入参为 Lqqfile_common/components/e 的方法 (精准锁定方法 o，排除 n)
+                calling_methods = _find_methods_calling_named_method(p, c_idx, "joinToString$default")
+                for m_name, proto_desc, _ in calling_methods:
+                    if "Lqqfile_common/components/e;" in proto_desc:
+                        rules_list.append({
+                            "name": f"群文件状态文字追加 (GroupFileCellSlotProvider->{m_name})",
+                            "target_class": slot_cls,
+                            "target_method": f"{m_name}{proto_desc}",
+                            "type": "REGEX_REPLACE",
+                            "regex": r"(invoke-static/range\s+\{[^}]+\},\s+Lkotlin/collections/CollectionsKt;->joinToString\$default\([^)]+\)Ljava/lang/String;\s+move-result-object\s+([vp]\d+))",
+                            "smali": r"""\1
     move-object/16 v8, p1
-    invoke-static {v2, v8}, Lcom/tencent/qqnt/patch/PatchBridge;->appendDownloadCountToStatusText(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/String;
-    move-result-object v2"""
-                            })
-                            status_rule_added = True
-                            break
-        if status_rule_added:
-            break
-
-        # B. 兼容 9.2.90 架构: qqfile_common/components/f->i
-        if not status_rule_added and b"qqfile_common/components/f" in dex_bytes:
-            p = FastDexParser(dex_bytes)
-            if p.valid:
-                c_idx = p.find_class_index("Lqqfile_common/components/f;")
-                if c_idx != -1:
-                    for m_name, proto_desc, _, _, _ in p.get_class_methods(c_idx):
-                        if "ZLqqfile_common/data/a;)" in proto_desc:
-                            target_method = f"{m_name}{proto_desc}"
-                            rules_list.append({
-                                "name": f"群文件状态文字构造前追加下载次数 (qqfile_common/components/f->{m_name})",
-                                "target_class": "Lqqfile_common/components/f;",
-                                "target_method": target_method,
-                                "type": "REGEX_REPLACE",
-                                "regex": r"(invoke-static/range\s+\{[^}]+\},\s+Lkotlin/collections/CollectionsKt;->joinToString\$default\([^)]+\)Ljava/lang/String;\s+move-result-object\s+v0)",
-                                "smali": r"""\1
-    move-object/16 v8, p0
-    invoke-static {v0, v8}, Lcom/tencent/qqnt/patch/PatchBridge;->appendDownloadCountToStatusText(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/String;
-    move-result-object v0"""
-                            })
-                            status_rule_added = True
-                            break
-        if status_rule_added:
-            break
+    invoke-static {\2, v8}, Lcom/tencent/qqnt/patch/PatchBridge;->appendDownloadCountToStatusText(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/String;
+    move-result-object \2"""
+                        })
+                        break
 
     return rules_list
