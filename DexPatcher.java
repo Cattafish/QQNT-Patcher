@@ -36,7 +36,7 @@ public class DexPatcher {
             int totalTasks = tasks.size();
             int availableCores = Runtime.getRuntime().availableProcessors();
             int threadCount = Math.max(1, Math.min(totalTasks, availableCores));
-            
+
             System.out.println("[DexPatcher] 启动多线程 AST 引擎 (待处理分包: " + totalTasks + ", 并发线程: " + threadCount + ")");
             System.out.flush();
 
@@ -178,6 +178,18 @@ public class DexPatcher {
         }
     }
 
+    private static int calculateMaxRegisterIndex(String smaliSnippet) {
+        int maxIndex = -1;
+        Matcher m = Pattern.compile("(?<![\\w$])v(\\d+)(?![\\w$])").matcher(smaliSnippet);
+        while (m.find()) {
+            try {
+                int idx = Integer.parseInt(m.group(1));
+                if (idx > maxIndex) maxIndex = idx;
+            } catch (Throwable ignored) {}
+        }
+        return maxIndex;
+    }
+
     private static String applyRule(String code, PatchRule rule) {
         String methodName = rule.targetMethod;
         Pattern pattern;
@@ -203,9 +215,28 @@ public class DexPatcher {
         if ("REPLACE".equals(rule.type)) {
             return methodMatcher.replaceAll(Matcher.quoteReplacement(rule.smali));
         } else if ("INSERT_BEFORE".equals(rule.type)) {
+            int requiredLocals = calculateMaxRegisterIndex(rule.smali) + 1;
             StringBuffer sb = new StringBuffer();
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
+
+                // 检查并自动扩充局部寄存器 (.locals)，防止注入指令越界引发 VerifyError
+                Matcher localsMatcher = Pattern.compile("(\\.locals\\s+)(\\d+)").matcher(mBody);
+                if (localsMatcher.find()) {
+                    int curLocals = Integer.parseInt(localsMatcher.group(2));
+                    if (curLocals < requiredLocals) {
+                        mBody = localsMatcher.replaceFirst("$1" + requiredLocals);
+                    }
+                } else {
+                    Matcher regMatcher = Pattern.compile("(\\.registers\\s+)(\\d+)").matcher(mBody);
+                    if (regMatcher.find()) {
+                        int curRegs = Integer.parseInt(regMatcher.group(2));
+                        if (curRegs < requiredLocals) {
+                            mBody = regMatcher.replaceFirst("$1" + requiredLocals);
+                        }
+                    }
+                }
+
                 Matcher headerMatcher = Pattern.compile("(\\.registers\\s+\\d+|\\.locals\\s+\\d+)").matcher(mBody);
                 if (headerMatcher.find()) {
                     int idx = headerMatcher.end();
@@ -222,13 +253,12 @@ public class DexPatcher {
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
                 String javaReplacement = rule.smali.replace("\\1", "$1").replace("\\2", "$2").replace("\\3", "$3");
-                
-                // ★ 新增：调试可视化：统计并打印实际替换命中次数
+
                 Pattern rp = Pattern.compile(rule.regex);
                 Matcher rm = rp.matcher(mBody);
                 int hitCount = 0;
                 while (rm.find()) hitCount++;
-                
+
                 if (hitCount > 0) {
                     System.out.println("[DexPatcher] -> 规则 [" + rule.targetMethod.split("\\(")[0] + "] 正则命中 " + hitCount + " 处，注入成功");
                 } else {

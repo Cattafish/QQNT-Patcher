@@ -1,15 +1,12 @@
 package com.tencent.qqnt.patch;
 
 import android.content.Context;
-import java.io.File;
+import android.content.SharedPreferences;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class ConfigManager {
-
-    private static final String TAG = "Config";
 
     public static final String VERSION = "v0.1.1";
     public static final String GITHUB_REPO = "Cattafish/QQNT-Patcher";
@@ -17,36 +14,42 @@ public class ConfigManager {
     public static final String GITHUB_REPO_URL = "https://github.com/" + GITHUB_REPO;
     public static final String UPDATE_API_URL = "https://qqnt-patcher.zcraft.dpdns.org";
 
+    private static final String PREF_NAME = "zzz_patcher_config";
+
     private static final String FLAG_DEBUG_LOG_ON     = "zzz_debug_log_on";
     private static final String FLAG_HAS_NEW_VERSION  = "zzz_has_new_version";
     private static final String PREFIX_PLUGIN_ON      = "zzz_plugin_on_";
 
     private static final Map<String, Boolean> sFlagCache = new ConcurrentHashMap<>();
-    private static final ExecutorService sDiskExecutor = Executors.newSingleThreadExecutor();
     private static volatile boolean sCacheLoaded = false;
     private static boolean sColdStartChecked = false;
 
-    private static File getFilesDir() {
+    private static SharedPreferences getPreferences() {
         Context ctx = AppContext.get();
-        return ctx != null ? ctx.getFilesDir() : null;
+        if (ctx == null) return null;
+        try {
+            return ctx.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static void ensureCacheLoaded() {
         if (sCacheLoaded) return;
         synchronized (sFlagCache) {
             if (sCacheLoaded) return;
-            File dir = getFilesDir();
-            if (dir != null && dir.exists()) {
-                File[] files = dir.listFiles();
-                if (files != null) {
-                    for (File f : files) {
-                        if (f.isFile() && f.getName().startsWith("zzz_")) {
-                            sFlagCache.put(f.getName(), Boolean.TRUE);
+            SharedPreferences sp = getPreferences();
+            if (sp != null) {
+                Map<String, ?> all = sp.getAll();
+                if (all != null) {
+                    for (Map.Entry<String, ?> entry : all.entrySet()) {
+                        if (entry.getValue() instanceof Boolean) {
+                            sFlagCache.put(entry.getKey(), (Boolean) entry.getValue());
                         }
                     }
                 }
+                sCacheLoaded = true;
             }
-            sCacheLoaded = true;
         }
     }
 
@@ -151,26 +154,18 @@ public class ConfigManager {
         Boolean cached = sFlagCache.get(flagName);
         if (cached != null) return cached;
 
-        File dir = getFilesDir();
-        if (dir == null) return false;
-        boolean exists = new File(dir, flagName).exists();
-        sFlagCache.put(flagName, exists);
-        return exists;
+        SharedPreferences sp = getPreferences();
+        if (sp == null) return false;
+        boolean val = sp.getBoolean(flagName, false);
+        sFlagCache.put(flagName, val);
+        return val;
     }
 
     public static void setFlag(String flagName, boolean present) {
         sFlagCache.put(flagName, present);
-        sDiskExecutor.execute(() -> {
-            File dir = getFilesDir();
-            if (dir == null) return;
-            try {
-                File file = new File(dir, flagName);
-                if (present) {
-                    if (!file.exists()) file.createNewFile();
-                } else {
-                    if (file.exists()) file.delete();
-                }
-            } catch (Throwable ignored) {}
-        });
+        SharedPreferences sp = getPreferences();
+        if (sp != null) {
+            sp.edit().putBoolean(flagName, present).apply();
+        }
     }
 }

@@ -102,7 +102,7 @@ public class AntiRevokeModule implements IPatchModule {
                 return;
             }
 
-            // 2. 拍一拍事件: 双向 UIN 严格校验
+            // 2. 拍一拍事件
             int chatType = 0;
             String peerUin = "";
             String fromUin = "";
@@ -110,16 +110,13 @@ public class AntiRevokeModule implements IPatchModule {
 
             byte[] head1 = Proto.getBytes(qqMsgBytes, 1);
 
-            // 群聊拍一拍: cmd1 == 732 && cmd2 == 20
             if (cmd1 == 732 && cmd2 == 20) {
                 chatType = 2;
                 peerUin = readUin(head1, 1);
                 String content = new String(subBytes, StandardCharsets.UTF_8);
                 fromUin = extractQQ(content, "1");
                 toUin = extractQQ(content, "2");
-            }
-            // 私聊拍一拍: cmd1 == 528 && cmd2 == 290
-            else if (cmd1 == 528 && cmd2 == 290) {
+            } else if (cmd1 == 528 && cmd2 == 290) {
                 chatType = 1;
                 peerUin = readUin(head1, 1);
                 fromUin = peerUin;
@@ -128,7 +125,6 @@ public class AntiRevokeModule implements IPatchModule {
 
             if (chatType != 0) {
                 String myUin = MsgSender.getMyUin();
-                // 严格校验：两者均为合法数字 QQ，且被拍对象是自己
                 if (isValidQQ(fromUin) && isValidQQ(toUin) && (toUin.equals(myUin) || myUin.isEmpty())) {
                     PLog.i("PaiYiPai", "成功捕获拍一拍事件: peer=" + peerUin + ", 来自=" + fromUin + ", 目标=" + toUin);
                     PluginManager.dispatchPaiYiPai(peerUin, chatType, fromUin);
@@ -139,27 +135,23 @@ public class AntiRevokeModule implements IPatchModule {
 
     private static String readUin(byte[] data, int targetField) {
         if (data == null) return "";
-        int pos = 0, len = data.length;
-        while (pos < len) {
-            long tag = Proto.readVarint(data, pos);
-            pos = Proto.lastPos;
+        ProtoReader reader = new ProtoReader(data);
+        while (reader.hasMore()) {
+            long tag = reader.readVarint();
             int field = (int) (tag >>> 3);
             int wire = (int) (tag & 7);
             if (wire == 0) {
-                long val = Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
+                long val = reader.readVarint();
                 if (field == targetField) return String.valueOf(val);
             } else if (wire == 1) {
-                pos += 8;
+                reader.skip(8);
             } else if (wire == 2) {
-                int l = (int) Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
-                if (field == targetField && l > 0 && pos + l <= len) {
-                    return new String(Proto.subArray(data, pos, l), StandardCharsets.UTF_8);
+                byte[] sub = reader.readBytes();
+                if (field == targetField && sub != null) {
+                    return new String(sub, StandardCharsets.UTF_8);
                 }
-                pos += l;
             } else if (wire == 5) {
-                pos += 4;
+                reader.skip(4);
             } else {
                 break;
             }
@@ -196,31 +188,26 @@ public class AntiRevokeModule implements IPatchModule {
 
     private static String extractToUinFromField7(byte[] data) {
         if (data == null) return "";
-        int pos = 0, len = data.length;
-        while (pos < len) {
-            long tag = Proto.readVarint(data, pos);
-            pos = Proto.lastPos;
+        ProtoReader reader = new ProtoReader(data);
+        while (reader.hasMore()) {
+            long tag = reader.readVarint();
             int field = (int) (tag >>> 3);
             int wire = (int) (tag & 7);
             if (wire == 2) {
-                int l = (int) Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
-                if (field == 7 && pos + l <= len) {
-                    byte[] itemBytes = Proto.subArray(data, pos, l);
+                byte[] itemBytes = reader.readBytes();
+                if (field == 7 && itemBytes != null) {
                     String k = Proto.getString(itemBytes, 1);
                     if ("uin_str2".equals(k)) {
                         String v = Proto.getString(itemBytes, 2);
                         if (!v.isEmpty()) return v;
                     }
                 }
-                pos += l;
             } else if (wire == 0) {
-                Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
+                reader.readVarint();
             } else if (wire == 1) {
-                pos += 8;
+                reader.skip(8);
             } else if (wire == 5) {
-                pos += 4;
+                reader.skip(4);
             } else {
                 break;
             }
@@ -290,21 +277,19 @@ public class AntiRevokeModule implements IPatchModule {
         if (data == null || data.length == 0 || !hasRecallSignature(data)) return data;
         try {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
-            int pos = 0;
-            int len = data.length;
+            ProtoReader reader = new ProtoReader(data);
 
-            while (pos < len) {
-                int start = pos;
-                long tag = Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
+            while (reader.hasMore()) {
+                int start = reader.getPos();
+                long tag = reader.readVarint();
                 int wire = (int) (tag & 7);
 
                 if (wire == 2) {
-                    int l = (int) Proto.readVarint(data, pos);
-                    pos = Proto.lastPos;
-                    if (pos + l <= len) {
-                        byte[] sub = Proto.subArray(data, pos, l);
-                        pos += l;
+                    int l = (int) reader.readVarint();
+                    int subStart = reader.getPos();
+                    if (subStart + l <= data.length) {
+                        byte[] sub = Proto.subArray(data, subStart, l);
+                        reader.skip(l);
                         if (isDirectRecallMsg(sub)) continue;
                         if (hasRecallSignature(sub)) {
                             byte[] cleanedSub = filterProtoTree(sub);
@@ -312,19 +297,18 @@ public class AntiRevokeModule implements IPatchModule {
                             Proto.writeVarint(out, cleanedSub.length);
                             out.write(cleanedSub);
                         } else {
-                            out.write(data, start, pos - start);
+                            out.write(data, start, reader.getPos() - start);
                         }
                     } else break;
                 } else if (wire == 0) {
-                    Proto.readVarint(data, pos);
-                    pos = Proto.lastPos;
-                    out.write(data, start, pos - start);
+                    reader.readVarint();
+                    out.write(data, start, reader.getPos() - start);
                 } else if (wire == 1) {
-                    pos += 8;
-                    out.write(data, start, pos - start);
+                    reader.skip(8);
+                    out.write(data, start, reader.getPos() - start);
                 } else if (wire == 5) {
-                    pos += 4;
-                    out.write(data, start, pos - start);
+                    reader.skip(4);
+                    out.write(data, start, reader.getPos() - start);
                 } else break;
             }
             return out.toByteArray();
@@ -405,58 +389,60 @@ public class AntiRevokeModule implements IPatchModule {
 
     private static long findSeqInOpBytes(byte[] data) {
         if (data == null || data.length == 0) return 0;
-        int pos = 0, len = data.length;
+        ProtoReader reader = new ProtoReader(data);
         long foundTime = 0, foundSeq = 0;
 
-        while (pos < len) {
-            long tag = Proto.readVarint(data, pos);
-            pos = Proto.lastPos;
+        while (reader.hasMore()) {
+            long tag = reader.readVarint();
             int wire = (int) (tag & 7);
 
             if (wire == 0) {
-                long val = Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
+                long val = reader.readVarint();
                 if (val >= 1577836800L && val <= 2051222400L) foundTime = val;
                 else if (val > 0 && val < 100000000L && val != 732 && val != 528 && val != 17 && val != 138) foundSeq = val;
-            } else if (wire == 1) pos += 8;
-            else if (wire == 2) {
-                int l = (int) Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
-                if (pos + l <= len && l > 0) {
-                    long subSeq = findSeqInOpBytes(Proto.subArray(data, pos, l));
+            } else if (wire == 1) {
+                reader.skip(8);
+            } else if (wire == 2) {
+                byte[] sub = reader.readBytes();
+                if (sub != null && sub.length > 0) {
+                    long subSeq = findSeqInOpBytes(sub);
                     if (subSeq > 0) return subSeq;
                 }
-                pos += l;
-            } else if (wire == 5) pos += 4;
-            else pos++;
+            } else if (wire == 5) {
+                reader.skip(4);
+            } else {
+                reader.skip(1);
+            }
         }
         return (foundTime > 0 && foundSeq > 0) ? foundSeq : 0;
     }
 
     private static String findFirstUidRecursively(byte[] data, String excludeUid) {
         if (data == null || data.length == 0) return "";
-        int pos = 0, len = data.length;
-        while (pos < len) {
-            long tag = Proto.readVarint(data, pos);
-            pos = Proto.lastPos;
+        ProtoReader reader = new ProtoReader(data);
+        while (reader.hasMore()) {
+            long tag = reader.readVarint();
             int wire = (int) (tag & 7);
             if (wire == 2) {
-                int l = (int) Proto.readVarint(data, pos);
-                pos = Proto.lastPos;
-                if (pos + l <= len && l > 0) {
-                    byte[] sub = Proto.subArray(data, pos, l);
+                byte[] sub = reader.readBytes();
+                if (sub != null && sub.length > 0) {
+                    int l = sub.length;
                     if (l >= 4 && l <= 40 && isAscii(sub)) {
-                        String s = new String(sub);
+                        String s = new String(sub, StandardCharsets.UTF_8);
                         if (s.startsWith("u_") && (excludeUid == null || !s.equals(excludeUid))) return s;
                     }
                     String inner = findFirstUidRecursively(sub, excludeUid);
                     if (!inner.isEmpty()) return inner;
                 }
-                pos += l;
-            } else if (wire == 0) { Proto.readVarint(data, pos); pos = Proto.lastPos; }
-            else if (wire == 1) pos += 8;
-            else if (wire == 5) pos += 4;
-            else pos++;
+            } else if (wire == 0) {
+                reader.readVarint();
+            } else if (wire == 1) {
+                reader.skip(8);
+            } else if (wire == 5) {
+                reader.skip(4);
+            } else {
+                reader.skip(1);
+            }
         }
         return "";
     }
@@ -543,20 +529,53 @@ public class AntiRevokeModule implements IPatchModule {
         return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    private static class Proto {
-        static int lastPos = 0;
+    /**
+     * 局部流式读取器：无共享静态状态，绝对并发安全
+     */
+    private static class ProtoReader {
+        private final byte[] data;
+        private int pos;
+        private final int limit;
 
-        static long readVarint(byte[] data, int pos) {
+        ProtoReader(byte[] data) {
+            this.data = data;
+            this.pos = 0;
+            this.limit = data != null ? data.length : 0;
+        }
+
+        boolean hasMore() {
+            return data != null && pos < limit;
+        }
+
+        int getPos() {
+            return pos;
+        }
+
+        void skip(int n) {
+            pos = Math.min(limit, pos + n);
+        }
+
+        long readVarint() {
             long result = 0;
-            for (int shift = 0; shift < 64 && pos < data.length; shift += 7) {
+            for (int shift = 0; shift < 64 && pos < limit; shift += 7) {
                 byte b = data[pos++];
                 result |= (long) (b & 0x7F) << shift;
                 if ((b & 0x80) == 0) break;
             }
-            lastPos = pos;
             return result;
         }
 
+        byte[] readBytes() {
+            int len = (int) readVarint();
+            if (len < 0 || pos + len > limit) return null;
+            byte[] dest = new byte[len];
+            System.arraycopy(data, pos, dest, 0, len);
+            pos += len;
+            return dest;
+        }
+    }
+
+    private static class Proto {
         static void writeVarint(ByteArrayOutputStream out, long value) {
             while ((value & ~0x7FL) != 0) {
                 out.write((int) ((value & 0x7F) | 0x80));
@@ -567,21 +586,23 @@ public class AntiRevokeModule implements IPatchModule {
 
         static byte[] getBytes(byte[] data, int targetField) {
             if (data == null) return null;
-            int pos = 0, len = data.length;
-            while (pos < len) {
-                long tag = readVarint(data, pos);
-                pos = lastPos;
+            ProtoReader reader = new ProtoReader(data);
+            while (reader.hasMore()) {
+                long tag = reader.readVarint();
                 int field = (int) (tag >>> 3);
                 int wire = (int) (tag & 7);
-                if (wire == 0) { readVarint(data, pos); pos = lastPos; }
-                else if (wire == 1) pos += 8;
-                else if (wire == 2) {
-                    int l = (int) readVarint(data, pos);
-                    pos = lastPos;
-                    if (field == targetField) return subArray(data, pos, l);
-                    pos += l;
-                } else if (wire == 5) pos += 4;
-                else break;
+                if (wire == 0) {
+                    reader.readVarint();
+                } else if (wire == 1) {
+                    reader.skip(8);
+                } else if (wire == 2) {
+                    byte[] sub = reader.readBytes();
+                    if (field == targetField) return sub;
+                } else if (wire == 5) {
+                    reader.skip(4);
+                } else {
+                    break;
+                }
             }
             return null;
         }
@@ -593,22 +614,23 @@ public class AntiRevokeModule implements IPatchModule {
 
         static long getVarint(byte[] data, int targetField) {
             if (data == null) return 0;
-            int pos = 0, len = data.length;
-            while (pos < len) {
-                long tag = readVarint(data, pos);
-                pos = lastPos;
+            ProtoReader reader = new ProtoReader(data);
+            while (reader.hasMore()) {
+                long tag = reader.readVarint();
                 int field = (int) (tag >>> 3);
                 int wire = (int) (tag & 7);
                 if (wire == 0) {
-                    long val = readVarint(data, pos);
-                    pos = lastPos;
+                    long val = reader.readVarint();
                     if (field == targetField) return val;
-                } else if (wire == 1) pos += 8;
-                else if (wire == 2) {
-                    int l = (int) readVarint(data, pos);
-                    pos = lastPos + l;
-                } else if (wire == 5) pos += 4;
-                else break;
+                } else if (wire == 1) {
+                    reader.skip(8);
+                } else if (wire == 2) {
+                    reader.readBytes();
+                } else if (wire == 5) {
+                    reader.skip(4);
+                } else {
+                    break;
+                }
             }
             return 0;
         }
