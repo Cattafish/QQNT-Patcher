@@ -15,6 +15,7 @@ import rules
 import native_patcher
 
 TOOLS_DIR = os.path.abspath("./tools")
+PRESET_PLUGINS_DIR = os.path.abspath("./preset_plugins")
 BAKSMALI_JAR = os.path.join(TOOLS_DIR, "baksmali.jar")
 SMALI_JAR = os.path.join(TOOLS_DIR, "smali.jar")
 DEXLIB2_JAR = os.path.join(TOOLS_DIR, "dexlib2.jar")
@@ -109,6 +110,38 @@ def ensure_fixed_keystore():
     if not os.path.exists(FIXED_KEYSTORE):
         log("INFO", "正在初始化固定签名证书 (仅首次生成)...")
         run_cmd(f"keytool -genkey -v -keystore {shlex.quote(FIXED_KEYSTORE)} -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname 'CN=Android Debug,O=Android,C=US'")
+
+def ensure_preset_plugins_dir():
+    os.makedirs(PRESET_PLUGINS_DIR, exist_ok=True)
+    keep_file = os.path.join(PRESET_PLUGINS_DIR, ".gitkeep")
+    if not os.path.exists(keep_file):
+        try:
+            with open(keep_file, "w", encoding="utf-8") as f:
+                f.write("")
+        except Exception:
+            pass
+
+def pack_preset_plugins_if_exist(work_dir):
+    ensure_preset_plugins_dir()
+    valid_files = []
+    for root, _, files in os.walk(PRESET_PLUGINS_DIR):
+        for f in files:
+            if f != ".gitkeep" and f != "README.md":
+                valid_files.append(os.path.join(root, f))
+
+    if not valid_files:
+        return None
+
+    target_zip = os.path.join(work_dir, "preset_plugins.zip")
+    log("INFO", f"检测到预设脚本目录 (装载 {len(valid_files)} 个脚本/资源文件)，正在封装预设脚本包...")
+
+    with zipfile.ZipFile(target_zip, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for file_path in valid_files:
+            arcname = os.path.relpath(file_path, PRESET_PLUGINS_DIR)
+            zf.write(file_path, arcname)
+
+    log("OK", f"  -> 预设脚本包封装完成: \033[36m{os.path.getsize(target_zip)} 字节\033[0m")
+    return target_zip
 
 def extract_original_apk_metadata(input_apk):
     log("INFO", "0. 正在提取官方原包特征指纹...")
@@ -306,6 +339,8 @@ def main():
     engine_bin = build_dex_patcher_engine_incremental(work_dir)
     helper_dex_path = compile_helper_dex_incremental(work_dir)
     bsh_standalone_dex = compile_bsh_to_asset_dex(work_dir)
+    preset_plugins_zip = pack_preset_plugins_if_exist(work_dir)
+
     if not helper_dex_path:
         log("ERR", "扩展 Dex 编译失败！")
         sys.exit(1)
@@ -351,7 +386,7 @@ def main():
     for r in dyn_file_rules:
         all_rules.append(r)
         log("OK", f"-> 群文件下载次数动态匹配: [{r['name']}]")
-        
+
     dyn_tablet_rule = rules.get_dynamic_tablet_rule_fast(dex_data_dict)
     if dyn_tablet_rule:
         all_rules.append(dyn_tablet_rule)
@@ -400,7 +435,6 @@ def main():
         cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
         run_cmd_stream(cmd)
 
-    # ★ P1 解耦：调用独立的 native_patcher 模块
     log("INFO", "3.1 正在扫描底层 Native SO 安全探针...")
     patched_so_files = native_patcher.patch_native_so(input_apk, work_dir, log_func=log)
 
@@ -442,6 +476,13 @@ def main():
         os.makedirs(target_assets_dir, exist_ok=True)
         shutil.copyfile(bsh_standalone_dex, os.path.join(target_assets_dir, "bsh.dex"))
         zip_args.append(shlex.quote("assets/bsh.dex"))
+
+    # ★ 注入预设脚本包 (assets/preset_plugins.zip)
+    if preset_plugins_zip and os.path.exists(preset_plugins_zip):
+        target_assets_dir = os.path.join(inject_dir, "assets")
+        os.makedirs(target_assets_dir, exist_ok=True)
+        shutil.copyfile(preset_plugins_zip, os.path.join(target_assets_dir, "preset_plugins.zip"))
+        zip_args.append(shlex.quote("assets/preset_plugins.zip"))
 
     assets_src_dir = "assets"
     if os.path.exists(assets_src_dir):

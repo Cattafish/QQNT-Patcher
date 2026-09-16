@@ -64,6 +64,14 @@ public class PluginManager {
         if (sInitialized || context == null) return;
         sInitialized = true;
         PLog.i("Plugin", "收到引擎初始化指令，开始载入插件...");
+
+        // ★ 核心注入：在扫描加载前自动释放预设脚本包
+        try {
+            PresetPluginInstaller.install(context);
+        } catch (Throwable t) {
+            PLog.e("Plugin", "安装预设脚本异常", t);
+        }
+
         reloadAll(context, null);
     }
 

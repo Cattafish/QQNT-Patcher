@@ -64,6 +64,21 @@ QQNT-Patcher 是一款针对 Android QQNT 架构的自动化静态字节码修�
 - **应用内免电脑实时日志监视器**：内存内置 300 条环形日志缓冲池，设置内可随时唤出弹窗查看实时运行状态，支持一键导出日志到本地存储（`latest.log`）以及快速清空。
 - 接入版本更新检测与 QQ 原厂 `QUIBadge`（ID: `0x7f0a5eb2`）原生红点联动。
 
+### 预设脚本
+
+为了免去在手机上手动创建文件夹并复制脚本的繁琐操作，本项目支持**预设脚本自动化打包**：
+
+1. 将任意脚本放入项目根目录下的 `preset_plugins/` 文件夹中：
+   - **支持文件夹形式**：如 `preset_plugins/快捷动作栏/main.java`
+   - **支持多层嵌套文件夹**：如 `preset_plugins/集合包/快捷动作栏/main.java`
+   - **支持 ZIP 压缩包**：如 `preset_plugins/QuickBar.zip` 或 `preset_plugins/全部插件.zip`
+2. 执行 `python3 patcher.py` 进行构建：
+   - 构建引擎会自动将预设脚本打包为 `assets/preset_plugins.zip` 并注入 APK。
+3. 安装并启动 QQ：
+   - 应用冷启动时将自动校验 CRC、解压并递归展开全部 zip，智能定位含有 `main.java` 的插件根目录，自动安装至手机外部存储 `zzz/plugins/` 目录。
+   - 首次释放的预设脚本会**自动激活开启**，实现真正的“开箱即用”！
+4. **仓库安全保证**：
+   - `.gitignore` 已内置安全过滤规则，你在 `preset_plugins/` 放置的私密脚本、配置与压缩包绝不会被 Git 提交并上传至公共仓库。
 ---
 
 ## 外部脚本存放路径
