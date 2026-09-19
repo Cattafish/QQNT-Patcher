@@ -36,39 +36,78 @@ public class AutoRemarkApkModule implements IPatchModule {
         for (MsgElement elem : elements) {
             if (elem != null && elem.fileElement != null) {
                 FileElement fe = elem.fileElement;
+
+                // ★★★ 核心无害化放行判断 ★★★
+                // 1. 如果带有 fileUuid，说明该文件在腾讯云端已存在（属于转发历史消息/气泡快传），绝不改名！
+                if (isCloudOrForwardedFile(fe)) {
+                    PLog.d(TAG, "检测到云端/转发文件 (UUID=" + fe.fileUuid + ")，无害化直接放行，避免破坏云端校验");
+                    continue;
+                }
+
+                // 2. 只有本地选择的 .apk 文件，并且本地物理文件真实存在时，才进行首次直传改名
                 if (fe.fileName != null && fe.fileName.toLowerCase().endsWith(".apk")) {
-                    renameApkFile(fe, context);
+                    if (fe.filePath != null && !fe.filePath.isEmpty()) {
+                        File localFile = new File(fe.filePath);
+                        if (localFile.exists() && localFile.isFile()) {
+                            renameApkFile(fe, localFile, context);
+                        }
+                    }
                 }
             }
         }
     }
 
-    private void renameApkFile(FileElement fileElement, Context context) {
+    /**
+     * 判断是否为云端已有文件/转发消息：
+     * 1. 只要包含 fileUuid，必为云端已有文件；
+     * 2. 本地 filePath 为空或文件在本地不存在，说明不是发自本机的首次物理上传。
+     */
+    private boolean isCloudOrForwardedFile(FileElement fe) {
+        if (fe == null) return true;
+        
+        // 判定 A: 存在云端 UUID
+        if (fe.fileUuid != null && !fe.fileUuid.trim().isEmpty()) {
+            return true;
+        }
+
+        // 判定 B: 没有本地物理路径
+        if (fe.filePath == null || fe.filePath.trim().isEmpty()) {
+            return true;
+        }
+
+        // 判定 C: 本地文件不存在（比如转发别人发来的未下载文件）
         try {
-            String filePath = fileElement.filePath;
+            File f = new File(fe.filePath);
+            if (!f.exists() || !f.isFile()) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void renameApkFile(FileElement fileElement, File localFile, Context context) {
+        try {
             String originalName = fileElement.fileName;
             String parsedName = null;
 
-            if (filePath != null && !filePath.isEmpty()) {
-                File file = new File(filePath);
-                if (file.exists()) {
-                    PackageManager pm = context.getPackageManager();
-                    PackageInfo packageInfo = pm.getPackageArchiveInfo(filePath, PackageManager.GET_META_DATA);
+            PackageManager pm = context.getPackageManager();
+            PackageInfo packageInfo = pm.getPackageArchiveInfo(localFile.getAbsolutePath(), PackageManager.GET_META_DATA);
 
-                    if (packageInfo != null && packageInfo.applicationInfo != null) {
-                        ApplicationInfo appInfo = packageInfo.applicationInfo;
-                        appInfo.sourceDir = filePath;
-                        appInfo.publicSourceDir = filePath;
+            if (packageInfo != null && packageInfo.applicationInfo != null) {
+                ApplicationInfo appInfo = packageInfo.applicationInfo;
+                appInfo.sourceDir = localFile.getAbsolutePath();
+                appInfo.publicSourceDir = localFile.getAbsolutePath();
 
-                        CharSequence label = appInfo.loadLabel(pm);
-                        String appName = label != null ? label.toString() : "";
-                        String versionName = packageInfo.versionName != null ? packageInfo.versionName : "未知版本";
+                CharSequence label = appInfo.loadLabel(pm);
+                String appName = label != null ? label.toString() : "";
+                String versionName = packageInfo.versionName != null ? packageInfo.versionName : "未知版本";
 
-                        String safeAppName = appName.replaceAll("[\\\\/:*?\"<>|]", "").trim();
-                        if (!safeAppName.isEmpty()) {
-                            parsedName = safeAppName + "_" + versionName + ".APK";
-                        }
-                    }
+                String safeAppName = appName.replaceAll("[\\\\/:*?\"<>|]", "").trim();
+                if (!safeAppName.isEmpty()) {
+                    parsedName = safeAppName + "_" + versionName + ".APK";
                 }
             }
 
@@ -80,7 +119,7 @@ public class AutoRemarkApkModule implements IPatchModule {
                 fileElement.fileName = "应用_" + System.currentTimeMillis() + ".APK";
             }
 
-            PLog.i(TAG, "已自动重命名待上传的 APK: [" + originalName + "] -> [" + fileElement.fileName + "]");
+            PLog.i(TAG, "已自动重命名待上传的本地 APK: [" + originalName + "] -> [" + fileElement.fileName + "]");
         } catch (Throwable t) {
             PLog.e(TAG, "解析 APK 异常", t);
             if (fileElement.fileName != null) {
@@ -94,7 +133,6 @@ public class AutoRemarkApkModule implements IPatchModule {
      */
     public static void onDispatchRespMsg(Object msfMessagePair) {
         if (msfMessagePair == null) return;
-        // ★ 核心受控：检查开关，如果关闭则直接放行官方原版逻辑
         if (!ConfigManager.isModuleEnabled("auto_remark_apk", true)) return;
 
         try {
