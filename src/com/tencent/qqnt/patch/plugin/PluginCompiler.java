@@ -20,10 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class PluginCompiler {
 
@@ -81,42 +78,6 @@ public class PluginCompiler {
         PLog.i("Plugin", "[" + mPluginId + "] 注册气泡长按菜单: " + name + " -> " + callback);
     }
 
-    /**
-     * ★ 加固：精准在目标函数体内执行作用域隔离，绝不波及其他函数
-     */
-    private String sanitizeScriptCode(String code) {
-        if (code == null || code.isEmpty()) return "";
-        try {
-            String suffix = "_rnd_" + (1000 + new Random().nextInt(9000));
-
-            // 1. 仅在 createShape 方法体内安全隔离局部变量 g
-            Pattern shapePattern = Pattern.compile("(?s)(GradientDrawable\\s+createShape\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})");
-            Matcher shapeMatcher = shapePattern.matcher(code);
-            if (shapeMatcher.find()) {
-                String body = shapeMatcher.group(2);
-                body = body.replaceAll("(?m)(GradientDrawable\\s+)g(\\s*=)", "$1g" + suffix + "$2")
-                           .replaceAll("(?m)\\bg\\.(setColor|setCornerRadius|setStroke|setShape)", "g" + suffix + ".$1")
-                           .replaceAll("(?m)(return\\s+)g(\\s*;)", "$1g" + suffix + "$2");
-                code = code.substring(0, shapeMatcher.start(2)) + body + code.substring(shapeMatcher.end(2));
-            }
-
-            // 2. 仅在 createInput 方法体内安全隔离局部变量 p 和 e
-            Pattern inputPattern = Pattern.compile("(?s)(EditText\\s+createInput\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})");
-            Matcher inputMatcher = inputPattern.matcher(code);
-            if (inputMatcher.find()) {
-                String body = inputMatcher.group(2);
-                body = body.replaceAll("(?m)(LayoutParams\\s+)p(\\s*=)", "$1p" + suffix + "$2")
-                           .replaceAll("(?m)\\bp\\.(bottomMargin|topMargin|leftMargin|rightMargin|width|height|gravity|weight)", "p" + suffix + ".$1")
-                           .replaceAll("(?m)(setLayoutParams\\(\\s*)p(\\s*\\))", "$1p" + suffix + "$2")
-                           .replaceAll("(?m)(EditText\\s+)e(\\s*=)", "$1e" + suffix + "$2")
-                           .replaceAll("(?m)\\be\\.(setHint|setText|setTextSize|setPadding|setBackground|setBackgroundDrawable|setLayoutParams)", "e" + suffix + ".$1")
-                           .replaceAll("(?m)(return\\s+)e(\\s*;)", "$1e" + suffix + "$2");
-                code = code.substring(0, inputMatcher.start(2)) + body + code.substring(inputMatcher.end(2));
-            }
-        } catch (Throwable ignored) {}
-        return code;
-    }
-
     public void loadJava(String path) {
         if (mInterpreter == null) return;
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
@@ -126,9 +87,10 @@ public class PluginCompiler {
             if (!f.exists()) return;
             long t0 = System.currentTimeMillis();
             String rawCode = readFileContent(f);
-            rawCode = sanitizeScriptCode(rawCode);
+
             Method evalMethod = mInterpreter.getClass().getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, rawCode);
+
             syncNewClassLoaders(f.getName().replace(".java", ""));
             PLog.i("Plugin", "[" + mPluginId + "] 载入外联类: " + f.getName() + " (" + (System.currentTimeMillis() - t0) + "ms)");
         } catch (Throwable t) {
@@ -201,16 +163,8 @@ public class PluginCompiler {
 
             Method setMethod = interpClass.getMethod("set", String.class, Object.class);
 
-            Context smartContext = new ContextWrapper(mContext) {
-                @Override
-                public Object getSystemService(String name) {
-                    if ("window".equals(name) || (Context.class.getName().equals(name))) {
-                        Activity act = com.tencent.qqnt.patch.AppContext.getCurrentActivity();
-                        if (act != null) return act.getSystemService(Context.WINDOW_SERVICE);
-                    }
-                    return super.getSystemService(name);
-                }
-            };
+            // 通用对齐 QFun 全局上下文，提供完整的服务常量反射与宿主窗口代理
+            QFunSmartContext smartContext = new QFunSmartContext(mContext);
 
             String myUin = MsgSender.getMyUin();
             if (myUin == null) myUin = "";
@@ -254,8 +208,7 @@ public class PluginCompiler {
                 throw new IllegalStateException(mLastError);
             }
 
-            rawCode = sanitizeScriptCode(rawCode);
-
+            // 原始代码直接 eval，绝无任何特征化正则替换
             Method evalMethod = interpClass.getMethod("eval", String.class);
             evalMethod.invoke(mInterpreter, rawCode);
 
@@ -479,5 +432,38 @@ public class PluginCompiler {
         PrintWriter pw = new PrintWriter(sw);
         t.printStackTrace(pw);
         return sw.toString();
+    }
+
+    public static class QFunSmartContext extends ContextWrapper {
+        public static final String WINDOW_SERVICE = Context.WINDOW_SERVICE;
+        public static final String INPUT_METHOD_SERVICE = Context.INPUT_METHOD_SERVICE;
+        public static final String AUDIO_SERVICE = Context.AUDIO_SERVICE;
+        public static final String CLIPBOARD_SERVICE = Context.CLIPBOARD_SERVICE;
+        public static final String VIBRATOR_SERVICE = Context.VIBRATOR_SERVICE;
+        public static final String CONNECTIVITY_SERVICE = Context.CONNECTIVITY_SERVICE;
+
+        public QFunSmartContext(Context base) {
+            super(base);
+        }
+
+        @Override
+        public Object getSystemService(String name) {
+            if (Context.WINDOW_SERVICE.equals(name)) {
+                Activity act = com.tencent.qqnt.patch.AppContext.getCurrentActivity();
+                if (act != null) {
+                    try {
+                        return act.getWindowManager();
+                    } catch (Throwable ignored) {}
+                }
+            }
+            Activity act = com.tencent.qqnt.patch.AppContext.getCurrentActivity();
+            if (act != null) {
+                try {
+                    Object svc = act.getSystemService(name);
+                    if (svc != null) return svc;
+                } catch (Throwable ignored) {}
+            }
+            return super.getSystemService(name);
+        }
     }
 }

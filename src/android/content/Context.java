@@ -8,6 +8,11 @@ import java.io.File;
 public class Context {
     public static final int MODE_PRIVATE = 0;
     public static final String WINDOW_SERVICE = "window";
+    public static final String INPUT_METHOD_SERVICE = "input_method";
+    public static final String AUDIO_SERVICE = "audio";
+    public static final String CLIPBOARD_SERVICE = "clipboard";
+    public static final String VIBRATOR_SERVICE = "vibrator";
+    public static final String CONNECTIVITY_SERVICE = "connectivity";
 
     public AssetManager getAssets() { return null; }
     public Resources getResources() { return null; }

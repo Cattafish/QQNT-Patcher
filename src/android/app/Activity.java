@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowManager;
 
 public class Activity extends Context {
     public Intent getIntent() { return null; }
@@ -15,4 +16,5 @@ public class Activity extends Context {
     public void startActivity(Intent intent) {}
     public void runOnUiThread(Runnable action) {}
     public Window getWindow() { return null; }
+    public WindowManager getWindowManager() { return null; }
 }

@@ -14,13 +14,14 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class FixClassLoader extends ClassLoader {
     private static final String TAG = "QQ_DEBUG";
     private final List<ClassLoader> loaders = new CopyOnWriteArrayList<>();
+    private final ClassLoader mHostClassLoader;
     private Object mBshClassManager = null;
     
-    // ★ 全局动态类注册表：存放在运行期由脚本定义的类与接口
     private static final Map<String, Class<?>> sScriptDefinedClasses = new ConcurrentHashMap<>();
 
     public FixClassLoader(ClassLoader hostClassLoader, ClassLoader bshClassLoader) {
         super(getSystemClassLoader());
+        this.mHostClassLoader = hostClassLoader;
         loaders.add(getSystemClassLoader());
         if (bshClassLoader != null && !loaders.contains(bshClassLoader)) {
             loaders.add(bshClassLoader);
@@ -72,6 +73,12 @@ public class FixClassLoader extends ClassLoader {
 
         // 2. 遍历已知 ClassLoader 链表查找
         for (ClassLoader loader : loaders) {
+            // 通用规则：无包名的短名称（不含 '.'）绝不向宿主 ClassLoader 查询，
+            // 防止混淆生成的默认包单字母类误拦截脚本中的局部变量求值
+            if (name.indexOf('.') == -1 && loader == mHostClassLoader) {
+                continue;
+            }
+
             try {
                 return loader.loadClass(name);
             } catch (Throwable ignored) {}
