@@ -23,14 +23,11 @@ public class ShowDownloadTimesModule implements IPatchModule {
 
     @Override public String getId() { return "show_file_download_count"; }
     @Override public String getName() { return "群文件显示下载次数"; }
-    @Override public boolean defaultEnabled() { return true; }
+    @Override public boolean defaultEnabled() { return false; }
 
-    // =========================================================================
-    // 环节 ①：网络回包统一解析器 (全版本自适应，0 包名硬编码)
-    // =========================================================================
     public static void handleGroupFileListResponse(Object responseObj) {
         if (responseObj == null) return;
-        if (!ConfigManager.isModuleEnabled("show_file_download_count", true)) return;
+        if (!ConfigManager.isModuleEnabled("show_file_download_count", false)) return;
 
         try {
             List<?> cList = findListFromObject(responseObj);
@@ -40,7 +37,6 @@ public class ShowDownloadTimesModule implements IPatchModule {
             for (Object cObj : cList) {
                 if (cObj == null) continue;
 
-                // 遍历 cObj 的字段，查找携带文件信息的数据对象 aObj
                 for (Field cf : cObj.getClass().getFields()) {
                     Object aObj = cf.get(cObj);
                     if (aObj == null) continue;
@@ -48,7 +44,6 @@ public class ShowDownloadTimesModule implements IPatchModule {
                     String fileId = null;
                     Integer count = null;
 
-                    // 方案 A: 依据不可变 Protobuf 协议标准，调用 d() 读取 Tag 1 与 Tag 9
                     try {
                         Method dMethod = aObj.getClass().getMethod("d");
                         Map<?, ?> pbMap = (Map<?, ?>) dMethod.invoke(aObj);
@@ -63,7 +58,6 @@ public class ShowDownloadTimesModule implements IPatchModule {
                         }
                     } catch (Throwable ignored) {}
 
-                    // 方案 B: 字段直取兼容 (9.3.60 的 p / 9.2.90 的 E)
                     if (fileId == null) {
                         try {
                             Field dF = aObj.getClass().getField("d");
@@ -100,16 +94,12 @@ public class ShowDownloadTimesModule implements IPatchModule {
         }
     }
 
-    // 兼容老版本方法签名
     public static void handleGroupFileList(Object fileListObj, Object responseObj) {
         handleGroupFileListResponse(responseObj);
     }
 
-    // =========================================================================
-    // 环节 ②：UI 状态文字统一追加入口
-    // =========================================================================
     public static String appendDownloadCountToStatusText(String originalStatus, Object fileItemObj) {
-        if (!ConfigManager.isModuleEnabled("show_file_download_count", true)) return originalStatus;
+        if (!ConfigManager.isModuleEnabled("show_file_download_count", false)) return originalStatus;
 
         try {
             String fileId = extractFileId(fileItemObj);
@@ -119,16 +109,13 @@ public class ShowDownloadTimesModule implements IPatchModule {
             if (count == null) count = sCountMap.get(fileId.toLowerCase());
 
             if (count == null) {
-                PLog.w(TAG, "未命中下载次数缓存 (fileId=" + fileId + ")");
                 return originalStatus;
             }
 
             if (originalStatus != null && originalStatus.endsWith("次")) return originalStatus;
 
             String newStatus = originalStatus + " · " + count + " 次";
-            PLog.once(TAG, fileId, "已注入下载次数: [" + originalStatus + "] -> [" + newStatus + "]");
             return newStatus;
-
         } catch (Throwable t) {
             PLog.e(TAG, "追加群文件下载次数异常", t);
         }
@@ -138,7 +125,6 @@ public class ShowDownloadTimesModule implements IPatchModule {
     private static String extractFileId(Object obj) {
         if (obj == null) return null;
 
-        // 途径 A (9.2.90): lr5.e -> 内部 d 字段 -> 内部 d 字段 (String fileId)
         try {
             Field dField = obj.getClass().getDeclaredField("d");
             dField.setAccessible(true);
@@ -153,14 +139,12 @@ public class ShowDownloadTimesModule implements IPatchModule {
             }
         } catch (Throwable ignored) {}
 
-        // 途径 B (9.3.60+): kn4.j 实现了 getFileId()
         try {
             Method m = obj.getClass().getMethod("getFileId");
             Object id = m.invoke(obj);
             if (id != null) return id.toString().replaceAll("^/+", "").trim();
         } catch (Throwable ignored) {}
 
-        // 途径 C: 检查自身的 a 字段或 d 字段
         try {
             Field aF = obj.getClass().getDeclaredField("a");
             aF.setAccessible(true);
@@ -202,10 +186,9 @@ public class ShowDownloadTimesModule implements IPatchModule {
         return null;
     }
 
-    // 经典 ListView 视图适配
     public static void handleTroopFileGetView(View view, Object adapter, int position) {
         if (view == null || adapter == null) return;
-        if (!ConfigManager.isModuleEnabled("show_file_download_count", true)) return;
+        if (!ConfigManager.isModuleEnabled("show_file_download_count", false)) return;
         try {
             if (!(view instanceof ViewGroup)) return;
             Class<?> adapterClz = adapter.getClass();

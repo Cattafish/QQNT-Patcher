@@ -31,6 +31,7 @@ public class AntiRevokeModule implements IPatchModule {
 
     @Override public String getId() { return "anti_revoke"; }
     @Override public String getName() { return "消息防撤回"; }
+    @Override public boolean defaultEnabled() { return false; }
 
     private static final Set<String> sRevokedCache = Collections.synchronizedSet(
             Collections.newSetFromMap(new LinkedHashMap<String, Boolean>(100, 0.75f, true) {
@@ -86,7 +87,6 @@ public class AntiRevokeModule implements IPatchModule {
             byte[] subBytes = Proto.getBytes(bodyBytes, 2);
             if (subBytes == null) return;
 
-            // 1. 群禁言事件
             if (cmd1 == 732 && cmd2 == 12) {
                 long troopUin = Proto.getVarint(subBytes, 1);
                 String opUid = Proto.getString(subBytes, 4);
@@ -102,7 +102,6 @@ public class AntiRevokeModule implements IPatchModule {
                 return;
             }
 
-            // 2. 拍一拍事件
             int chatType = 0;
             String peerUin = "";
             String fromUin = "";
@@ -449,7 +448,7 @@ public class AntiRevokeModule implements IPatchModule {
 
     private static long extractGroupSeq(byte[] opBytes) {
         if (opBytes == null || opBytes.length == 0) return 0;
-        byte[] realBytes = (opBytes.length > 7 && opBytes[0] != 0x08) ? Proto.subArray(opBytes, 7) : opBytes;
+        byte[] realBytes = (opBytes.length > 7 && opBytes[0] != 0x08) ? Proto.subArray(opBytes, 7, opBytes.length - 7) : opBytes;
         byte[] infoBytes = Proto.getBytes(realBytes, 2);
         if (infoBytes != null) {
             byte[] msgInfoBytes = Proto.getBytes(infoBytes, 2);
@@ -529,9 +528,6 @@ public class AntiRevokeModule implements IPatchModule {
         return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    /**
-     * 局部流式读取器：无共享静态状态，绝对并发安全
-     */
     private static class ProtoReader {
         private final byte[] data;
         private int pos;
@@ -643,7 +639,7 @@ public class AntiRevokeModule implements IPatchModule {
         }
 
         static byte[] subArray(byte[] src, int start) {
-            return subArray(src, start, src.length - start);
+            return subArray(src, start, src != null ? src.length - start : 0);
         }
     }
 }

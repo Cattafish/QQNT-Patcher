@@ -11,11 +11,11 @@ public class AtAllNotifyBlockModule implements IPatchModule {
 
     @Override public String getId() { return "block_at_all_notify"; }
     @Override public String getName() { return "静默 @全体成员 弹窗通知"; }
-    @Override public boolean defaultEnabled() { return true; }
+    @Override public boolean defaultEnabled() { return false; }
 
     public static boolean shouldDropMsgNotify(Object msgNotifyItemObj) {
         if (msgNotifyItemObj == null) return false;
-        if (!ConfigManager.isModuleEnabled("block_at_all_notify", true)) return false;
+        if (!ConfigManager.isModuleEnabled("block_at_all_notify", false)) return false;
         try {
             Class<?> dClz = Class.forName("com.tencent.qqnt.notification.util.d");
             Object dInstance = dClz.getField("a").get(null);
@@ -29,7 +29,7 @@ public class AtAllNotifyBlockModule implements IPatchModule {
 
     public static boolean shouldDropRecentContact(Object recentContactInfoObj) {
         if (recentContactInfoObj == null) return false;
-        if (!ConfigManager.isModuleEnabled("block_at_all_notify", true)) return false;
+        if (!ConfigManager.isModuleEnabled("block_at_all_notify", false)) return false;
         try {
             Class<?> clz = recentContactInfoObj.getClass();
             int chatType = clz.getField("chatType").getInt(recentContactInfoObj);

@@ -68,7 +68,8 @@ public class NativeSettingHelper {
     // =========================================================================
     public static Object createTextItem(ClassLoader cl, CharSequence title, CharSequence rightText) {
         try {
-            Object left = createLeftPart(cl, title, 0, null);
+            Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
+            Object left = newInstanceSmart(xbdClass, new Object[]{title});
 
             Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
             Object right = newInstanceSmart(xcgClass, new Object[]{rightText != null ? rightText : "", false, false});
@@ -81,11 +82,48 @@ public class NativeSettingHelper {
     }
 
     // =========================================================================
-    // 3. 开关类型 (Switch Item)
+    // 3. 开关类型 (Switch Item，完美支持单行 x 与双行 c)
     // =========================================================================
     public static Object createSwitch(ClassLoader cl, CharSequence title, boolean isChecked, CompoundButton.OnCheckedChangeListener listener) {
+        return createSwitch(cl, title, null, isChecked, listener);
+    }
+
+    public static Object createSwitch(ClassLoader cl, CharSequence title, CharSequence subTitle, boolean isChecked, CompoundButton.OnCheckedChangeListener listener) {
         try {
-            Object left = createLeftPart(cl, title, 0, null);
+            // ★★★ 当指定了副标题时，采用 QQ 原生真正的双行组件 c (c$a$f + c$b$c) ★★★
+            if (subTitle != null && subTitle.length() > 0) {
+                try {
+                    Class<?> cClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.c");
+                    Class<?> cafClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.c$a$f");
+                    Class<?> cbcClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.c$b$c");
+
+                    // 实例化左侧双行标题组件 c$a$f(title, subTitle)
+                    Object left = newInstanceSmart(cafClass, new Object[]{title, subTitle});
+
+                    // 实例化右侧双行开关组件 c$b$c(isChecked, listener, isEnabled)
+                    Object right = newInstanceSmart(cbcClass, new Object[]{isChecked, listener, true});
+
+                    // 对齐设置事件监听器
+                    if (right != null && listener != null) {
+                        try {
+                            Method gMethod = cbcClass.getMethod("g", CompoundButton.OnCheckedChangeListener.class);
+                            gMethod.invoke(right, listener);
+                        } catch (Throwable ignored) {}
+                    }
+
+                    // 组装整行并返回
+                    Object doubleLineRow = newInstanceSmart(cClass, new Object[]{left, right});
+                    if (doubleLineRow != null) {
+                        return doubleLineRow;
+                    }
+                } catch (Throwable t) {
+                    PLog.w("UI", "双行组件加载异常，降级单行: " + t.getMessage());
+                }
+            }
+
+            // 单行默认走 x
+            Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
+            Object left = newInstanceSmart(xbdClass, new Object[]{title});
 
             Class<?> xcfClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$f");
             Object right = newInstanceSmart(xcfClass, new Object[]{isChecked, listener, true});
@@ -102,7 +140,8 @@ public class NativeSettingHelper {
     // =========================================================================
     public static Object createClickable(ClassLoader cl, CharSequence title, String rightText, boolean showArrow, boolean showRedDot, View.OnClickListener clickListener) {
         try {
-            Object left = createLeftPart(cl, title, 0, null);
+            Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
+            Object left = newInstanceSmart(xbdClass, new Object[]{title});
 
             Class<?> xcgClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$c$g");
             Object right = newInstanceSmart(xcgClass, new Object[]{rightText != null ? rightText : "", showArrow, showRedDot});
@@ -116,7 +155,6 @@ public class NativeSettingHelper {
 
             Object rowItem = assembleSingleLineRow(cl, left, right, clickListener);
 
-            // 红点绘制阶段增强绑定
             if (showRedDot && rowItem != null) {
                 try {
                     Class<?> gClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.g");
@@ -140,26 +178,6 @@ public class NativeSettingHelper {
         } catch (Throwable t) {
             PLog.e("UI", "createClickable 失败", t);
             return null;
-        }
-    }
-
-    // =========================================================================
-    // 内部私有反射工具
-    // =========================================================================
-    private static Object createLeftPart(ClassLoader cl, CharSequence title, int iconResId, Drawable iconDrawable) throws Exception {
-        if (iconResId != 0 || iconDrawable != null) {
-            Class<?> xbbClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$b");
-            Constructor<?> ctor = xbbClass.getConstructor(CharSequence.class, int.class);
-            Object left = ctor.newInstance(title, iconResId);
-            if (iconDrawable != null) {
-                Method setDrawableM = xbbClass.getMethod("e", Drawable.class);
-                setDrawableM.invoke(left, iconDrawable);
-            }
-            return left;
-        } else {
-            Class<?> xbdClass = cl.loadClass("com.tencent.mobileqq.widget.listitem.x$b$d");
-            Constructor<?> ctor = xbdClass.getConstructor(CharSequence.class);
-            return ctor.newInstance(title);
         }
     }
 

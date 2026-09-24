@@ -147,13 +147,13 @@ public class ZzzSettingFragment {
                 // 页面 A: Zzz 核心设置页
                 // =====================================================
 
-                // 1. 核心功能
+                // 1. 核心功能 (自动适配左侧双行标题)
                 List<Object> funcItems = new ArrayList<>();
                 for (IPatchModule module : ModuleManager.getModules()) {
                     if (!module.showInSettings()) continue;
                     final IPatchModule m = module;
                     funcItems.add(NativeSettingHelper.createSwitch(
-                            cl, m.getName(), m.isEnabled(),
+                            cl, m.getName(), m.getSubName(), m.isEnabled(),
                             (btn, checked) -> {
                                 m.setEnabled(checked);
                                 ToastHelper.show(activity, m.getName() + (checked ? " 已开启" : " 已关闭"));
@@ -215,7 +215,6 @@ public class ZzzSettingFragment {
                 groups.add(NativeSettingHelper.createGroup(cl, "关于", centeredItalicFooter, aboutItems));
             }
 
-            // 统一调用 Helper 提交给 Adapter
             NativeSettingHelper.applyGroupsToAdapter(adapter, groups, cl);
 
         } catch (Throwable ignored) {}

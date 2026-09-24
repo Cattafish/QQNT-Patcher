@@ -91,7 +91,7 @@ public class ConfigManager {
     }
 
     public static boolean isFloatingBallEnabled() {
-        return isModuleEnabled("floating_ball", true);
+        return isModuleEnabled("floating_ball", false);
     }
 
     public static void setFloatingBallEnabled(boolean enabled) {
@@ -99,7 +99,7 @@ public class ConfigManager {
     }
 
     public static boolean isAntiRevokeEnabled() {
-        return isModuleEnabled("anti_revoke", true);
+        return isModuleEnabled("anti_revoke", false);
     }
 
     public static void setAntiRevokeEnabled(boolean enabled) {
@@ -107,7 +107,7 @@ public class ConfigManager {
     }
 
     public static boolean isFlashPicDecryptEnabled() {
-        return isModuleEnabled("flash_pic", true);
+        return isModuleEnabled("flash_pic", false);
     }
 
     public static void setFlashPicDecryptEnabled(boolean enabled) {
