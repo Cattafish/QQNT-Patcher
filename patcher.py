@@ -394,6 +394,11 @@ def main():
         all_rules.append(dyn_tablet_rule)
         log("OK", f"-> 平板模式动态匹配: [{dyn_tablet_rule['name']}]")
 
+    dyn_todo_rule = rules.get_dynamic_troop_todo_rule(dex_data_dict)
+    if dyn_todo_rule:
+        all_rules.append(dyn_todo_rule)
+        log("OK", f"-> 群待办通知动态匹配: [{dyn_todo_rule['name']}]")
+
     dex_to_rules = {}
     matched_rule_names = set()
 
@@ -479,7 +484,6 @@ def main():
         shutil.copyfile(bsh_standalone_dex, os.path.join(target_assets_dir, "bsh.dex"))
         zip_args.append(shlex.quote("assets/bsh.dex"))
 
-    # ★ 注入预设脚本包 (assets/preset_plugins.zip)
     if preset_plugins_zip and os.path.exists(preset_plugins_zip):
         target_assets_dir = os.path.join(inject_dir, "assets")
         os.makedirs(target_assets_dir, exist_ok=True)

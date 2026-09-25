@@ -3,7 +3,6 @@ import os
 def scan_and_merge():
     # 1. 路径设置：向上跳转，定位到模块根目录 app/zzz
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    # 目标定位到 app/zzz 这一级，这样就能涵盖【上一级】和【src同级】
     target_root = os.path.normpath(os.path.join(base_dir, "."))
     output_file = os.path.join(base_dir, "merged_qqntpatch.txt")
 
@@ -11,8 +10,11 @@ def scan_and_merge():
     text_extensions = {'.js', '.kt', '.java', '.xml', '.gradle', '.md', '.pro', '.cpp', '.h', '.proto', '.properties', '.yml', '.py'}
     image_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.ico'}
     
-    # 忽略这些文件夹，防止扫描到成千上万个编译后的垃圾文件
+    # 忽略文件夹名（通用的垃圾/构建目录）
     ignore_dirs = {'.gradle', '.idea', 'build', 'bin', 'gen', 'out', 'gradle'}
+    
+    # 【新增】指定忽略的具体相对路径（统一使用 '/'，适配 Windows 和 Linux）
+    ignore_rel_paths = {'src/bsh'}
 
     if not os.path.exists(target_root):
         print(f"错误: 找不到目录 {target_root}")
@@ -23,20 +25,29 @@ def scan_and_merge():
 
     with open(output_file, 'w', encoding='utf-8') as f_out:
         for root, dirs, files in os.walk(target_root):
-            # 过滤忽略目录
-            dirs[:] = [d for d in dirs if d not in ignore_dirs]
+            # 【核心修改点】：过滤目录
+            # 必须就地修改 dirs[:]，这样 os.walk 就不会递归遍历被过滤掉的文件夹
+            filtered_dirs = []
+            for d in dirs:
+                # 1. 按名称忽略
+                if d in ignore_dirs:
+                    continue
+                
+                # 2. 按具体相对路径忽略（例如 src/bsh）
+                # 获取子文件夹相对于 target_root 的路径并标准化为 / 分隔符
+                rel_sub_dir = os.path.relpath(os.path.join(root, d), target_root).replace('\\', '/')
+                if any(rel_sub_dir == p or rel_sub_dir.startswith(p + '/') for p in ignore_rel_paths):
+                    continue
+                    
+                filtered_dirs.append(d)
+                
+            dirs[:] = filtered_dirs  # 更新待遍历目录
 
             # 获取当前文件夹相对于根目录的深度
-            # '' 表示 target_root 本身
-            # 'app' 表示 target_root/app
             rel_dir = os.path.relpath(root, target_root)
             
-            # 【核心逻辑控制】:
-            # 如果不是 src 目录及其子目录，且不是根目录或 app 目录，则不递归进入其子文件夹
-            # 这样可以实现你要求的“上一级单层扫描”和“同级单层扫描”
-            # 但 src 内部我们依然保持深度扫描以获取所有代码
+            # 【单层/深层控制】
             if rel_dir != "." and "src" not in rel_dir and rel_dir != "app":
-                # 只有 src 目录下才允许继续往下走，其他的只看当前层文件
                 pass 
 
             for file in files:
@@ -66,5 +77,3 @@ def scan_and_merge():
 
 if __name__ == "__main__":
     scan_and_merge()
-    
-    

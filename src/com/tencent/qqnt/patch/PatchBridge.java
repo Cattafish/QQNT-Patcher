@@ -17,6 +17,10 @@ public class PatchBridge {
         return ConfigManager.isModuleEnabled("tablet_mode", false);
     }
 
+    public static boolean shouldDropTroopToDo() {
+        return com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule.shouldDropTroopToDo();
+    }
+
     public static boolean shouldDropMsgNotify(Object msgNotifyItemObj) {
         return com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule.shouldDropMsgNotify(msgNotifyItemObj);
     }
@@ -59,7 +63,6 @@ public class PatchBridge {
     public static void handleSendMsg(ArrayList elements) {
         if (elements == null || elements.isEmpty()) return;
         try {
-            // 联动 QFun 的 OnSendMsg 监听器 (支持 ModifyPicSize 等脚本动态改包)
             me.yxp.qfun.hook.api.OnSendMsg.INSTANCE.dispatch(elements);
         } catch (Throwable ignored) {}
 

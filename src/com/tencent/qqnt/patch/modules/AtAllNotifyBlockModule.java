@@ -10,8 +10,17 @@ public class AtAllNotifyBlockModule implements IPatchModule {
     private static final String TAG = "NotifyBlock";
 
     @Override public String getId() { return "block_at_all_notify"; }
-    @Override public String getName() { return "静默 @全体成员 弹窗通知"; }
+    @Override public String getName() { return "静默 @全体 与群待办通知"; }
+    @Override public String getSubName() { return "拦截群内 @全体成员 弹窗与 群待办 提醒"; }
     @Override public boolean defaultEnabled() { return false; }
+
+    public static boolean shouldDropTroopToDo() {
+        boolean enabled = ConfigManager.isModuleEnabled("block_at_all_notify", false);
+        if (enabled) {
+            PLog.i(TAG, "命中静默：拦截 0x135 群待办强提醒");
+        }
+        return enabled;
+    }
 
     public static boolean shouldDropMsgNotify(Object msgNotifyItemObj) {
         if (msgNotifyItemObj == null) return false;
