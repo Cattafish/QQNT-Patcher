@@ -1,134 +1,101 @@
 package com.tencent.qqnt.patch.plugin;
 
-import android.util.Log;
-import java.lang.reflect.Field;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public class FixClassLoader extends ClassLoader {
-    private static final String TAG = "QQ_DEBUG";
     private final List<ClassLoader> loaders = new CopyOnWriteArrayList<>();
     private final ClassLoader mHostClassLoader;
-    private Object mBshClassManager = null;
-    
-    private static final Map<String, Class<?>> sScriptDefinedClasses = new ConcurrentHashMap<>();
+    private final ClassLoader mBshClassLoader;
 
     public FixClassLoader(ClassLoader hostClassLoader, ClassLoader bshClassLoader) {
         super(getSystemClassLoader());
         this.mHostClassLoader = hostClassLoader;
+        this.mBshClassLoader = bshClassLoader;
+
         loaders.add(getSystemClassLoader());
         if (bshClassLoader != null && !loaders.contains(bshClassLoader)) {
             loaders.add(bshClassLoader);
         }
+        ClassLoader selfLoader = FixClassLoader.class.getClassLoader();
+        if (selfLoader != null && !loaders.contains(selfLoader)) {
+            loaders.add(selfLoader);
+        }
         if (hostClassLoader != null && !loaders.contains(hostClassLoader)) {
             loaders.add(hostClassLoader);
-        }
-        try {
-            ClassLoader selfLoader = FixClassLoader.class.getClassLoader();
-            if (selfLoader != null && !loaders.contains(selfLoader)) {
-                loaders.add(selfLoader);
-            }
-        } catch (Throwable ignored) {}
-    }
-
-    public static void registerScriptClass(String name, Class<?> clazz) {
-        if (name != null && clazz != null) {
-            sScriptDefinedClasses.put(name, clazz);
-            Log.i(TAG, "[FixClassLoader] 动态注册脚本类: " + name + " -> " + clazz.getName());
         }
     }
 
     public static Class<?> getScriptClass(String name) {
-        if (name == null) return null;
-        return sScriptDefinedClasses.get(name);
+        return null;
     }
 
-    public static void clearScriptClasses() {
-        sScriptDefinedClasses.clear();
-    }
+    public static void registerScriptClass(String name, Class<?> clazz) {}
 
-    public void setBshClassManager(Object classManager) {
-        this.mBshClassManager = classManager;
-    }
-
-    public void addClassLoader(ClassLoader classLoader) {
-        if (classLoader != null && !loaders.contains(classLoader)) {
-            loaders.add(0, classLoader);
-        }
-    }
+    public static void clearScriptClasses() {}
 
     @Override
     protected Class<?> findClass(String name) throws ClassNotFoundException {
-        // 1. 优先直接从动态注册表中秒级返回
-        Class<?> scriptClz = sScriptDefinedClasses.get(name);
-        if (scriptClz != null) {
-            return scriptClz;
+        // ★ 核心屏蔽：QQ 宿主包自带了被腾讯严重裁剪的 protobuf-lite，缺少 newInstance(OutputStream)！
+        // 当请求 com.google.protobuf.* 时，绝对不能走宿主，必须从包含完整官方实现的 bshClassLoader 中加载！
+        if (name.startsWith("com.google.protobuf.") && mBshClassLoader != null) {
+            try {
+                return mBshClassLoader.loadClass(name);
+            } catch (Exception ignored) {}
         }
 
-        // 2. 遍历已知 ClassLoader 链表查找
-        for (ClassLoader loader : loaders) {
-            // 通用规则：无包名的短名称（不含 '.'）绝不向宿主 ClassLoader 查询，
-            // 防止混淆生成的默认包单字母类误拦截脚本中的局部变量求值
-            if (name.indexOf('.') == -1 && loader == mHostClassLoader) {
-                continue;
+        // 自动兼容 Android 内部类语法糖 (如 LinearLayout.LayoutParams -> android.widget.LinearLayout$LayoutParams)
+        if (cleanInnerClassName(name)) {
+            String candidate = name.replace(".LayoutParams", "$LayoutParams");
+            if (!candidate.startsWith("android.")) {
+                candidate = "android.widget." + candidate;
             }
+            try {
+                if (mHostClassLoader != null) return mHostClassLoader.loadClass(candidate);
+            } catch (Throwable ignored) {}
+        }
 
+        for (ClassLoader loader : loaders) {
             try {
                 return loader.loadClass(name);
-            } catch (Throwable ignored) {}
+            } catch (Exception ignored) {}
         }
-
-        // 3. 继承链深度穿透
-        if (mBshClassManager != null) {
-            try {
-                Field cacheField = getFieldInHierarchy(mBshClassManager.getClass(), "absoluteClassCache");
-                if (cacheField != null) {
-                    cacheField.setAccessible(true);
-                    Map<?, ?> cache = (Map<?, ?>) cacheField.get(mBshClassManager);
-                    if (cache != null && cache.containsKey(name)) {
-                        Object obj = cache.get(name);
-                        if (obj instanceof Class) {
-                            Class<?> clz = (Class<?>) obj;
-                            registerScriptClass(name, clz);
-                            addClassLoader(clz.getClassLoader());
-                            return clz;
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
-
-        throw new ClassNotFoundException(name);
+        return null;
     }
 
     @Override
     public Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-        Class<?> loaded = findLoadedClass(name);
-        if (loaded != null) return loaded;
+        // 关键隔离：拦截 protobuf 宿主污染
+        if (name.startsWith("com.google.protobuf.") && mBshClassLoader != null) {
+            try {
+                return mBshClassLoader.loadClass(name);
+            } catch (Exception ignored) {}
+        }
 
-        try {
-            return findClass(name);
-        } catch (ClassNotFoundException ignored) {}
+        if (cleanInnerClassName(name)) {
+            String candidate = name.replace(".LayoutParams", "$LayoutParams");
+            if (!candidate.startsWith("android.")) {
+                candidate = "android.widget." + candidate;
+            }
+            try {
+                if (mHostClassLoader != null) return mHostClassLoader.loadClass(candidate);
+            } catch (Throwable ignored) {}
+        }
 
-        return super.loadClass(name, resolve);
+        for (ClassLoader loader : loaders) {
+            try {
+                return loader.loadClass(name);
+            } catch (Exception ignored) {}
+        }
+        throw new ClassNotFoundException(name);
     }
 
-    private static Field getFieldInHierarchy(Class<?> clazz, String fieldName) {
-        Class<?> cur = clazz;
-        while (cur != null) {
-            try {
-                return cur.getDeclaredField(fieldName);
-            } catch (NoSuchFieldException e) {
-                cur = cur.getSuperclass();
-            }
-        }
-        return null;
+    private boolean cleanInnerClassName(String name) {
+        return name.contains(".LayoutParams") || name.endsWith("LayoutParams");
     }
 
     @Override
@@ -149,8 +116,14 @@ public class FixClassLoader extends ClassLoader {
                 while (resources.hasMoreElements()) {
                     urlList.add(resources.nextElement());
                 }
-            } catch (Throwable ignored) {}
+            } catch (Exception ignored) {}
         }
         return Collections.enumeration(urlList);
+    }
+
+    public void addClassLoader(ClassLoader classLoader) {
+        if (classLoader != null && !loaders.contains(classLoader)) {
+            loaders.add(classLoader);
+        }
     }
 }

@@ -191,15 +191,17 @@ def compile_helper_dex_incremental(work_dir):
     os.makedirs(dex_out, exist_ok=True)
 
     quoted_java = [shlex.quote(f) for f in java_files]
-    run_cmd(f"javac -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
+    cp_dep = f"{shlex.quote(DX_JAR)}:{shlex.quote(PROTOBUF_JAR)}"
+    run_cmd(f"javac -cp {cp_dep} -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
 
-    patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(bin_dir) for f in fs if f.endswith(".class") and ("com/tencent/qqnt/patch" in r or "me/yxp" in r)]
+    patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(bin_dir) for f in fs if f.endswith(".class")]
     if not patch_classes:
         log("ERR", "编译 helper java 失败！")
         return None
 
     quoted_classes = [shlex.quote(f) for f in patch_classes]
-    run_cmd(f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes))
+    d8_extra = f"{shlex.quote(DX_JAR)} {shlex.quote(PROTOBUF_JAR)}"
+    run_cmd(f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes) + f" {d8_extra}")
 
     return target_dex if os.path.exists(target_dex) else None
 

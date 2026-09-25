@@ -17,9 +17,6 @@ public class PatchBridge {
         return ConfigManager.isModuleEnabled("tablet_mode", false);
     }
 
-    // =========================================================================
-    // 通知静默模块代理
-    // =========================================================================
     public static boolean shouldDropMsgNotify(Object msgNotifyItemObj) {
         return com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule.shouldDropMsgNotify(msgNotifyItemObj);
     }
@@ -28,20 +25,12 @@ public class PatchBridge {
         return com.tencent.qqnt.patch.modules.AtAllNotifyBlockModule.shouldDropRecentContact(recentContactInfoObj);
     }
 
-    // =========================================================================
-    // MSF 底层长连接响应消息总线分发 (取代模块间私相授受)
-    // =========================================================================
     public static void handleDispatchRespMsg(Object msfMessagePair) {
         if (msfMessagePair == null) return;
-        // 独立分发给图片 RKey 模块
         com.tencent.qqnt.patch.plugin.RKeyManager.onDispatchRespMsg(msfMessagePair);
-        // 独立分发给上传 APK 防 .1 污染模块
         com.tencent.qqnt.patch.modules.AutoRemarkApkModule.onDispatchRespMsg(msfMessagePair);
     }
 
-    // =========================================================================
-    // 群文件下载次数外部桥梁
-    // =========================================================================
     public static void handleGroupFileListResponse(Object responseObj) {
         com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.handleGroupFileListResponse(responseObj);
     }
@@ -58,9 +47,6 @@ public class PatchBridge {
         return com.tencent.qqnt.patch.modules.ShowDownloadTimesModule.appendDownloadCountToStatusText(originalStatus, fileItemObj);
     }
 
-    // =========================================================================
-    // 核心生命周期与消息监听
-    // =========================================================================
     public static byte[] handleMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
         ConfigManager.triggerColdStartUpdateCheck();
         if (session != null) {
@@ -72,6 +58,11 @@ public class PatchBridge {
     @SuppressWarnings("unchecked")
     public static void handleSendMsg(ArrayList elements) {
         if (elements == null || elements.isEmpty()) return;
+        try {
+            // 联动 QFun 的 OnSendMsg 监听器 (支持 ModifyPicSize 等脚本动态改包)
+            me.yxp.qfun.hook.api.OnSendMsg.INSTANCE.dispatch(elements);
+        } catch (Throwable ignored) {}
+
         try {
             com.tencent.qqnt.patch.plugin.PluginManager.dispatchSendMsg(elements);
         } catch (Throwable ignored) {}

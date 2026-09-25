@@ -1,7 +1,10 @@
 package me.yxp.qfun.utils.qq;
 
+import android.app.Activity;
 import android.util.Log;
+import com.tencent.qqnt.kernel.nativeinterface.IKernelMsgService;
 import com.tencent.qqnt.patch.AppContext;
+import com.tencent.qqnt.patch.plugin.MsgSender;
 
 public class QQCurrentEnv {
     private static final String TAG = "QQ_DEBUG";
@@ -12,5 +15,13 @@ public class QQCurrentEnv {
         if (runtime != null) return runtime;
         Log.e(TAG, "[QQCurrentEnv] 无法获取 AppRuntime / QQAppInterface");
         return null;
+    }
+
+    public IKernelMsgService getKernelMsgService() {
+        return MsgSender.getMsgService();
+    }
+
+    public Activity getActivity() {
+        return AppContext.getCurrentActivity();
     }
 }

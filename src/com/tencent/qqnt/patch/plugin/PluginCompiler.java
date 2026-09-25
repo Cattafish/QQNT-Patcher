@@ -6,9 +6,10 @@ import android.content.ContextWrapper;
 import com.tencent.qqnt.kernelpublic.nativeinterface.Contact;
 import com.tencent.qqnt.patch.PLog;
 
-import java.io.ByteArrayOutputStream;
+import bsh.BshMethod;
+import bsh.Interpreter;
+
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Constructor;
@@ -27,13 +28,11 @@ public class PluginCompiler {
     private final Context mContext;
     private final File mPluginDir;
     private final String mPluginId;
-    private final ClassLoader mBshClassLoader;
-    private Object mInterpreter = null;
+    public Interpreter interpreter = new Interpreter();
     private volatile boolean mIsRunning = false;
     private volatile String mLastError = "";
-    private volatile int mLoadedCodeLength = 0;
-    private final Map<String, String> mMenuItems = new LinkedHashMap<>();
-    private final FixClassLoader mFixClassLoader;
+    public final Map<String, String> menuItems = new LinkedHashMap<>();
+    public final FixClassLoader loader;
 
     private static final Map<String, MsgMenuItemInfo> sAllMsgMenuItems = new ConcurrentHashMap<>();
 
@@ -55,20 +54,18 @@ public class PluginCompiler {
         this.mContext = context;
         this.mPluginDir = pluginDir;
         this.mPluginId = pluginDir.getName();
-        this.mBshClassLoader = bshClassLoader;
-        this.mFixClassLoader = new FixClassLoader(context.getClassLoader(), bshClassLoader);
+        this.loader = new FixClassLoader(context.getClassLoader(), bshClassLoader);
     }
 
     public String getPluginId() { return mPluginId; }
-    public Map<String, String> getMenuItems() { return mMenuItems; }
-    public FixClassLoader getClassLoader() { return mFixClassLoader; }
-    public Object getInterpreter() { return mInterpreter; }
+    public Map<String, String> getMenuItems() { return menuItems; }
+    public FixClassLoader getClassLoader() { return loader; }
+    public Object getInterpreter() { return interpreter; }
     public boolean isRunning() { return mIsRunning; }
     public String getLastError() { return mLastError; }
-    public int getLoadedCodeLength() { return mLoadedCodeLength; }
 
     public void addMenuItem(String name, String callback) {
-        mMenuItems.put(name, callback);
+        menuItems.put(name, callback);
         PLog.i("Plugin", "[" + mPluginId + "] 注册悬浮球动作: " + name + " -> " + callback);
     }
 
@@ -79,23 +76,15 @@ public class PluginCompiler {
     }
 
     public void loadJava(String path) {
-        if (mInterpreter == null) return;
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
-        Thread.currentThread().setContextClassLoader(mFixClassLoader);
+        Thread.currentThread().setContextClassLoader(loader);
         try {
             File f = new File(path);
             if (!f.exists()) return;
-            long t0 = System.currentTimeMillis();
-            String rawCode = readFileContent(f);
-
-            Method evalMethod = mInterpreter.getClass().getMethod("eval", String.class);
-            evalMethod.invoke(mInterpreter, rawCode);
-
-            syncNewClassLoaders(f.getName().replace(".java", ""));
-            PLog.i("Plugin", "[" + mPluginId + "] 载入外联类: " + f.getName() + " (" + (System.currentTimeMillis() - t0) + "ms)");
+            interpreter.source(f.getAbsolutePath());
+            PLog.i("Plugin", "[" + mPluginId + "] 成功 source 外联类: " + f.getName());
         } catch (Throwable t) {
-            Throwable realEx = (t instanceof InvocationTargetException) ? ((InvocationTargetException) t).getTargetException() : t;
-            logError("loadJava 异常 [" + path + "]:\n" + getStackTrace(realEx));
+            logError("loadJava 异常 [" + path + "]:\n" + getStackTrace(t));
         } finally {
             Thread.currentThread().setContextClassLoader(originalTCCL);
         }
@@ -103,8 +92,8 @@ public class PluginCompiler {
 
     private void syncNewClassLoaders(String expectedClassName) {
         try {
-            Method getClassManagerM = mInterpreter.getClass().getMethod("getClassManager");
-            Object cm = getClassManagerM.invoke(mInterpreter);
+            Method getClassManagerM = interpreter.getClass().getMethod("getClassManager");
+            Object cm = getClassManagerM.invoke(interpreter);
             if (cm != null) {
                 Class<?> cur = cm.getClass();
                 Field cacheField = null;
@@ -120,8 +109,7 @@ public class PluginCompiler {
                             if (entry.getKey() instanceof String && entry.getValue() instanceof Class) {
                                 String className = (String) entry.getKey();
                                 Class<?> clazz = (Class<?>) entry.getValue();
-                                FixClassLoader.registerScriptClass(className, clazz);
-                                mFixClassLoader.addClassLoader(clazz.getClassLoader());
+                                loader.addClassLoader(clazz.getClassLoader());
                             }
                         }
                     }
@@ -132,9 +120,8 @@ public class PluginCompiler {
 
     public synchronized boolean start() {
         if (mIsRunning) stop();
-        mMenuItems.clear();
+        menuItems.clear();
         mLastError = "";
-        mLoadedCodeLength = 0;
 
         File scriptFile = new File(mPluginDir, "main.java");
         if (!scriptFile.exists() || !scriptFile.isFile()) {
@@ -143,95 +130,47 @@ public class PluginCompiler {
             return false;
         }
 
-        if (mBshClassLoader == null) {
-            mLastError = "bsh 运行时引擎尚未就绪";
-            PLog.e("Plugin", "[" + mPluginId + "] 启动失败: " + mLastError);
-            return false;
-        }
-
         long tStart = System.currentTimeMillis();
-
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
-        Thread.currentThread().setContextClassLoader(mFixClassLoader);
+        Thread.currentThread().setContextClassLoader(loader);
 
         try {
-            Class<?> interpClass = mBshClassLoader.loadClass("bsh.Interpreter");
-            mInterpreter = interpClass.getDeclaredConstructor().newInstance();
-
-            Method setClassLoaderMethod = interpClass.getMethod("setClassLoader", ClassLoader.class);
-            setClassLoaderMethod.invoke(mInterpreter, mFixClassLoader);
-
-            Method setMethod = interpClass.getMethod("set", String.class, Object.class);
-
-            // 通用对齐 QFun 全局上下文，提供完整的服务常量反射与宿主窗口代理
-            QFunSmartContext smartContext = new QFunSmartContext(mContext);
+            interpreter = new Interpreter();
 
             String myUin = MsgSender.getMyUin();
             if (myUin == null) myUin = "";
 
-            setMethod.invoke(mInterpreter, "context", smartContext);
-            setMethod.invoke(mInterpreter, "classLoader", mFixClassLoader);
-            setMethod.invoke(mInterpreter, "pluginPath", mPluginDir.getAbsolutePath());
-            setMethod.invoke(mInterpreter, "pluginId", mPluginId);
-            setMethod.invoke(mInterpreter, "myUin", myUin);
+            interpreter.set("context", new QFunSmartContext(mContext));
+            interpreter.set("myUin", myUin);
+            interpreter.set("classLoader", mContext.getClassLoader());
+            interpreter.set("pluginPath", mPluginDir.getAbsolutePath());
+            interpreter.set("pluginId", mPluginId);
+            interpreter.setClassLoader(loader);
 
             PluginMethod api = new PluginMethod(mContext, mPluginDir);
             api.setCompiler(this);
-            setMethod.invoke(mInterpreter, "api", api);
+            interpreter.set("api", api);
+
+            for (Method m : PluginMethod.class.getDeclaredMethods()) {
+                if (Modifier.isPublic(m.getModifiers()) && !m.getName().contains("$")) {
+                    try {
+                        interpreter.getNameSpace().setMethod(new BshMethod(m, api));
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+            // 1:1 对齐 QFun 原生 source 执行
+            interpreter.source(scriptFile.getAbsolutePath());
 
             try {
-                Method getNameSpaceMethod = interpClass.getMethod("getNameSpace");
-                Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
-
-                Class<?> bshMethodClz = mBshClassLoader.loadClass("bsh.BshMethod");
-                Constructor<?> bshMethodCtor = bshMethodClz.getConstructor(Method.class, Object.class);
-                Method setMethodM = nameSpace.getClass().getMethod("setMethod", bshMethodClz);
-
-                for (Method m : PluginMethod.class.getDeclaredMethods()) {
-                    if (Modifier.isPublic(m.getModifiers()) && !m.getName().contains("$")) {
-                        try {
-                            Object bshM = bshMethodCtor.newInstance(m, api);
-                            setMethodM.invoke(nameSpace, bshM);
-                        } catch (Throwable ignored) {}
-                    }
+                BshMethod initM = interpreter.getNameSpace().getMethod("init", new Class[0]);
+                if (initM != null) {
+                    initM.invoke(new Object[0], interpreter);
                 }
-
-                Method importObjectMethod = nameSpace.getClass().getMethod("importObject", Object.class);
-                importObjectMethod.invoke(nameSpace, api);
             } catch (Throwable ignored) {}
 
-            String rawCode = readFileContent(scriptFile);
-            mLoadedCodeLength = rawCode.length();
-
-            if (rawCode.trim().isEmpty()) {
-                mLastError = "main.java 读取为空(请检查文件权限或内容)";
-                throw new IllegalStateException(mLastError);
-            }
-
-            // 原始代码直接 eval，绝无任何特征化正则替换
-            Method evalMethod = interpClass.getMethod("eval", String.class);
-            evalMethod.invoke(mInterpreter, rawCode);
-
-            try {
-                Method getNameSpaceMethod = interpClass.getMethod("getNameSpace");
-                Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
-                Method getMethodM = nameSpace.getClass().getMethod("getMethod", String.class, Class[].class);
-
-                Object initMethod = getMethodM.invoke(nameSpace, "init", new Class[0]);
-                if (initMethod == null) {
-                    initMethod = getMethodM.invoke(nameSpace, "onLoad", new Class[0]);
-                }
-                if (initMethod != null) {
-                    Method invokeM = initMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
-                    invokeM.invoke(initMethod, new Object[0], mInterpreter);
-                    PLog.i("Plugin", "[" + mPluginId + "] 成功自动回调 init()");
-                }
-            } catch (Throwable tInit) {
-                PLog.w("Plugin", "[" + mPluginId + "] 回调 init 提示: " + tInit.getMessage());
-            }
-
             mIsRunning = true;
-            PLog.i("Plugin", "[" + mPluginId + "] 启动就绪: 读入 " + mLoadedCodeLength + " 字节, 注册 " + mMenuItems.size() + " 项入口 (" + (System.currentTimeMillis() - tStart) + "ms)");
+            PLog.i("Plugin", "[" + mPluginId + "] 原生 QFun 架构启动成功，注册 " + menuItems.size() + " 项入口 (" + (System.currentTimeMillis() - tStart) + "ms)");
             return true;
         } catch (Throwable t) {
             Throwable realEx = (t instanceof InvocationTargetException) ? ((InvocationTargetException) t).getTargetException() : t;
@@ -244,40 +183,21 @@ public class PluginCompiler {
         }
     }
 
-    private String readFileContent(File file) {
-        if (!file.exists()) return "";
+    public synchronized void stop() {
+        if (!mIsRunning && interpreter == null) return;
+        mIsRunning = false;
         try {
-            file.setReadable(true, false);
+            if (interpreter != null) {
+                BshMethod unLoadM = interpreter.getNameSpace().getMethod("unLoadPlugin", new Class[0]);
+                if (unLoadM != null) {
+                    unLoadM.invoke(new Object[0], interpreter);
+                }
+                interpreter.getNameSpace().clear();
+            }
         } catch (Throwable ignored) {}
-
-        try (FileInputStream fis = new FileInputStream(file);
-             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int len;
-            while ((len = fis.read(buffer)) != -1) {
-                bos.write(buffer, 0, len);
-            }
-            byte[] allBytes = bos.toByteArray();
-            if (allBytes.length == 0) return "";
-
-            int startOffset = 0;
-            if (allBytes.length >= 3 &&
-                (allBytes[0] & 0xFF) == 0xEF &&
-                (allBytes[1] & 0xFF) == 0xBB &&
-                (allBytes[2] & 0xFF) == 0xBF) {
-                startOffset = 3;
-            }
-
-            String content = new String(allBytes, startOffset, allBytes.length - startOffset, StandardCharsets.UTF_8);
-            if (content.startsWith("\uFEFF")) {
-                content = content.substring(1);
-            }
-            return content;
-        } catch (Throwable t) {
-            mLastError = "读取失败: " + t.getMessage();
-            PLog.e("Plugin", "读取脚本失败: " + file.getAbsolutePath(), t);
-            return "";
-        }
+        menuItems.clear();
+        sAllMsgMenuItems.entrySet().removeIf(e -> mPluginId.equals(e.getValue().pluginId));
+        interpreter = null;
     }
 
     public void chatInterface(int cType, String peerUin, String name) {
@@ -306,24 +226,20 @@ public class PluginCompiler {
     }
 
     private void invokeScriptMethod(String methodName, Class<?>[] types, Object[] args) {
-        if (!mIsRunning || mInterpreter == null) return;
+        if (!mIsRunning || interpreter == null) return;
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
-        Thread.currentThread().setContextClassLoader(mFixClassLoader);
+        Thread.currentThread().setContextClassLoader(loader);
         try {
-            Method getNameSpaceMethod = mInterpreter.getClass().getMethod("getNameSpace");
-            Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
-            Method getMethodM = nameSpace.getClass().getMethod("getMethod", String.class, Class[].class);
-            Object targetMethod = getMethodM.invoke(nameSpace, methodName, types);
-            if (targetMethod == null) {
+            BshMethod m = interpreter.getNameSpace().getMethod(methodName, types);
+            if (m == null) {
                 Class<?>[] altTypes = types.clone();
                 for (int i = 0; i < altTypes.length; i++) {
                     if (altTypes[i] == int.class) altTypes[i] = Integer.class;
                 }
-                targetMethod = getMethodM.invoke(nameSpace, methodName, altTypes);
+                m = interpreter.getNameSpace().getMethod(methodName, altTypes);
             }
-            if (targetMethod != null) {
-                Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
-                invokeM.invoke(targetMethod, args, mInterpreter);
+            if (m != null) {
+                m.invoke(args, interpreter);
             }
         } catch (Throwable ignored) {}
         finally {
@@ -332,46 +248,35 @@ public class PluginCompiler {
     }
 
     public void invokeMenuItem(String callback, int cType, String peerUin, String name) {
-        if (!mIsRunning || mInterpreter == null) return;
+        if (!mIsRunning || interpreter == null) return;
         ClassLoader originalTCCL = Thread.currentThread().getContextClassLoader();
-        Thread.currentThread().setContextClassLoader(mFixClassLoader);
+        Thread.currentThread().setContextClassLoader(loader);
         try {
-            Method getNameSpaceMethod = mInterpreter.getClass().getMethod("getNameSpace");
-            Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
-            Method getMethodsMethod = nameSpace.getClass().getMethod("getMethods");
-            Object[] methods = (Object[]) getMethodsMethod.invoke(nameSpace);
-
-            Object targetMethod = null;
+            BshMethod targetMethod = null;
             Object[] invokeArgs = null;
 
-            if (methods != null) {
-                for (Object m : methods) {
-                    Method getNameM = m.getClass().getMethod("getName");
-                    String mName = (String) getNameM.invoke(m);
-                    if (callback.equals(mName)) {
-                        Method getParamTypesM = m.getClass().getMethod("getParameterTypes");
-                        Class<?>[] pts = (Class<?>[]) getParamTypesM.invoke(m);
-                        if (pts.length == 3) {
-                            targetMethod = m;
-                            invokeArgs = new Object[]{cType, peerUin, name};
-                            break;
-                        } else if (pts.length == 4) {
-                            targetMethod = m;
-                            Contact contact = MsgSender.makeContact(peerUin, cType);
-                            invokeArgs = new Object[]{cType, peerUin, name, contact};
-                            break;
-                        } else if (pts.length == 0) {
-                            targetMethod = m;
-                            invokeArgs = new Object[0];
-                            break;
-                        }
+            for (BshMethod m : interpreter.getNameSpace().getMethods()) {
+                if (m.getName().equals(callback)) {
+                    Class<?>[] pts = m.getParameterTypes();
+                    if (pts.length == 3) {
+                        targetMethod = m;
+                        invokeArgs = new Object[]{cType, peerUin, name};
+                        break;
+                    } else if (pts.length == 4) {
+                        targetMethod = m;
+                        Contact contact = MsgSender.makeContact(peerUin, cType);
+                        invokeArgs = new Object[]{cType, peerUin, name, contact};
+                        break;
+                    } else if (pts.length == 0) {
+                        targetMethod = m;
+                        invokeArgs = new Object[0];
+                        break;
                     }
                 }
             }
 
             if (targetMethod != null) {
-                Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
-                invokeM.invoke(targetMethod, invokeArgs, mInterpreter);
+                targetMethod.invoke(invokeArgs, interpreter);
             }
         } catch (Throwable t) {
             Throwable realEx = (t instanceof InvocationTargetException) ? ((InvocationTargetException) t).getTargetException() : t;
@@ -386,39 +291,15 @@ public class PluginCompiler {
     }
 
     public String getMsg(String original) {
-        if (!mIsRunning || mInterpreter == null || original == null) return original;
+        if (!mIsRunning || interpreter == null || original == null) return original;
         try {
-            Method getNameSpaceMethod = mInterpreter.getClass().getMethod("getNameSpace");
-            Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
-            Method getMethodM = nameSpace.getClass().getMethod("getMethod", String.class, Class[].class);
-            Object targetMethod = getMethodM.invoke(nameSpace, "getMsg", new Class[]{String.class});
-            if (targetMethod != null) {
-                Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
-                Object res = invokeM.invoke(targetMethod, new Object[]{original}, mInterpreter);
+            BshMethod m = interpreter.getNameSpace().getMethod("getMsg", new Class[]{String.class});
+            if (m != null) {
+                Object res = m.invoke(new Object[]{original}, interpreter);
                 if (res instanceof String) return (String) res;
             }
         } catch (Throwable ignored) {}
         return original;
-    }
-
-    public synchronized void stop() {
-        if (!mIsRunning && mInterpreter == null) return;
-        mIsRunning = false;
-        try {
-            if (mInterpreter != null) {
-                Method getNameSpaceMethod = mInterpreter.getClass().getMethod("getNameSpace");
-                Object nameSpace = getNameSpaceMethod.invoke(mInterpreter);
-                Method getMethodM = nameSpace.getClass().getMethod("getMethod", String.class, Class[].class);
-                Object targetMethod = getMethodM.invoke(nameSpace, "unLoadPlugin", new Class[0]);
-                if (targetMethod != null) {
-                    Method invokeM = targetMethod.getClass().getMethod("invoke", Object[].class, mInterpreter.getClass());
-                    invokeM.invoke(targetMethod, new Object[0], mInterpreter);
-                }
-            }
-        } catch (Throwable ignored) {}
-        mMenuItems.clear();
-        sAllMsgMenuItems.entrySet().removeIf(e -> mPluginId.equals(e.getValue().pluginId));
-        mInterpreter = null;
     }
 
     private void logError(String text) {
