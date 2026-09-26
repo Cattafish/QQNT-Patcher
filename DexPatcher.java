@@ -1,15 +1,21 @@
 package com.tencent.qqnt.patcher;
 
+import org.antlr.runtime.CommonTokenStream;
+import org.antlr.runtime.tree.CommonTree;
+import org.antlr.runtime.tree.CommonTreeNodeStream;
 import org.jf.baksmali.Adaptors.ClassDefinition;
 import org.jf.baksmali.BaksmaliOptions;
 import org.jf.baksmali.formatter.BaksmaliWriter;
 import org.jf.dexlib2.Opcodes;
 import org.jf.dexlib2.dexbacked.DexBackedDexFile;
 import org.jf.dexlib2.iface.ClassDef;
+import org.jf.dexlib2.writer.builder.DexBuilder;
 import org.jf.dexlib2.writer.io.FileDataStore;
+import org.jf.dexlib2.writer.io.MemoryDataStore;
 import org.jf.dexlib2.writer.pool.DexPool;
-import org.jf.smali.Smali;
-import org.jf.smali.SmaliOptions;
+import org.jf.smali.smaliFlexLexer;
+import org.jf.smali.smaliParser;
+import org.jf.smali.smaliTreeWalker;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -37,7 +43,7 @@ public class DexPatcher {
             int availableCores = Runtime.getRuntime().availableProcessors();
             int threadCount = Math.max(1, Math.min(totalTasks, availableCores));
 
-            System.out.println("[DexPatcher] 启动多线程 AST 引擎 (待处理分包: " + totalTasks + ", 并发线程: " + threadCount + ")");
+            System.out.println("[DexPatcher] 启动纯内存 AST 编译引擎 (待处理分包: " + totalTasks + ", 并发线程: " + threadCount + ")");
             System.out.flush();
 
             ExecutorService executor = Executors.newFixedThreadPool(threadCount);
@@ -112,7 +118,9 @@ public class DexPatcher {
                     for (PatchRule r : matchedRules) {
                         smaliCode = applyRule(smaliCode, r);
                     }
-                    ClassDef newClassDef = assembleSingleClass(smaliCode, opcodes);
+                    
+                    // ★ 纯内存即时汇编单个 ClassDef，彻底摆脱临时文件
+                    ClassDef newClassDef = assembleSingleClassInMemory(smaliCode, opcodes, clsType);
                     if (newClassDef != null) {
                         replacedClasses.put(clsType, newClassDef);
                     } else {
@@ -147,34 +155,61 @@ public class DexPatcher {
         return sw.toString();
     }
 
-    private static ClassDef assembleSingleClass(String smaliCode, Opcodes opcodes) {
-        File tempSmali = null;
-        File tempDex = null;
+    /**
+     * ★★★ 核心突破：纯内存 Smali 编译管线 ★★★
+     * 绕过命令行包装器 Smali.assemble()，直接调度 ANTLR 解析流并在内存中构建 DEX 字节数组
+     */
+    private static ClassDef assembleSingleClassInMemory(String smaliCode, Opcodes opcodes, String classType) {
         try {
-            tempSmali = File.createTempFile("patch_temp_", ".smali");
-            try (FileOutputStream fos = new FileOutputStream(tempSmali)) {
-                fos.write(smaliCode.getBytes(StandardCharsets.UTF_8));
+            // 1. 词法分析 (Lexer)
+            StringReader reader = new StringReader(smaliCode);
+            smaliFlexLexer lexer = new smaliFlexLexer(reader, opcodes.api);
+            
+            // 极其重要：设置虚拟源文件路径，防止 ANTLR 语法报错回溯行号时抛出 NullPointerException
+            String virtualFileName = (classType != null) ? classType.replaceAll("[L;]", "").replace('/', '.') + ".smali" : "inline.smali";
+            lexer.setSourceFile(new File(virtualFileName));
+
+            // 2. 语法分析 (Parser)
+            CommonTokenStream tokens = new CommonTokenStream(lexer);
+            smaliParser parser = new smaliParser(tokens);
+            parser.setApiLevel(opcodes.api);
+            parser.setVerboseErrors(false);
+
+            smaliParser.smali_file_return result = parser.smali_file();
+            if (parser.getNumberOfSyntaxErrors() > 0 || lexer.getNumberOfSyntaxErrors() > 0) {
+                System.err.println("[WARN] Smali 语法解析错误 [" + classType + "]: 发现 " + parser.getNumberOfSyntaxErrors() + " 处语法错误");
+                return null;
             }
-            tempDex = File.createTempFile("patch_temp_", ".dex");
 
-            SmaliOptions options = new SmaliOptions();
-            options.outputDexFile = tempDex.getAbsolutePath();
-            options.jobs = 1;
+            // 3. 语法树分析 (AST TreeWalker)
+            CommonTree tree = (CommonTree) result.getTree();
+            CommonTreeNodeStream treeStream = new CommonTreeNodeStream(tree);
+            treeStream.setTokenStream(tokens);
 
-            boolean success = Smali.assemble(options, Collections.singletonList(tempSmali.getAbsolutePath()));
-            if (!success || !tempDex.exists() || tempDex.length() == 0) return null;
+            DexBuilder dexBuilder = new DexBuilder(opcodes);
+            smaliTreeWalker dexGen = new smaliTreeWalker(treeStream);
+            dexGen.setDexBuilder(dexBuilder);
+            dexGen.setApiLevel(opcodes.api);
+            dexGen.setVerboseErrors(false);
+            dexGen.smali_file();
 
-            try (InputStream is = new BufferedInputStream(new FileInputStream(tempDex))) {
-                DexBackedDexFile singleDex = DexBackedDexFile.fromInputStream(opcodes, is);
-                Set<? extends ClassDef> classes = singleDex.getClasses();
-                return classes.isEmpty() ? null : classes.iterator().next();
+            if (dexGen.getNumberOfSyntaxErrors() > 0) {
+                System.err.println("[WARN] Smali 语义生成错误 [" + classType + "]");
+                return null;
             }
+
+            // 4. 纯内存写入：利用 MemoryDataStore 承载字节流，0 磁盘开销
+            MemoryDataStore memoryStore = new MemoryDataStore();
+            dexBuilder.writeTo(memoryStore);
+
+            // 5. 将内存 byte[] 包装为 DexBackedDexFile 并提取目标 ClassDef
+            DexBackedDexFile singleDex = new DexBackedDexFile(opcodes, memoryStore.getData());
+            Set<? extends ClassDef> classes = singleDex.getClasses();
+            return classes.isEmpty() ? null : classes.iterator().next();
+
         } catch (Throwable t) {
-            System.err.println("[WARN] 汇编临时类失败: " + t.getMessage());
+            System.err.println("[WARN] 内存汇编类失败 [" + classType + "]: " + t.getMessage());
             return null;
-        } finally {
-            if (tempSmali != null) tempSmali.delete();
-            if (tempDex != null) tempDex.delete();
         }
     }
 
@@ -220,7 +255,6 @@ public class DexPatcher {
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
 
-                // 检查并自动扩充局部寄存器 (.locals)，防止注入指令越界引发 VerifyError
                 Matcher localsMatcher = Pattern.compile("(\\.locals\\s+)(\\d+)").matcher(mBody);
                 if (localsMatcher.find()) {
                     int curLocals = Integer.parseInt(localsMatcher.group(2));

@@ -24,6 +24,7 @@ GUAVA_JAR = os.path.join(TOOLS_DIR, "guava.jar")
 BSH_JAR = os.path.join(TOOLS_DIR, "bsh.jar")
 DX_JAR = os.path.join(TOOLS_DIR, "dx.jar")
 PROTOBUF_JAR = os.path.join(TOOLS_DIR, "protobuf.jar")
+ANDROID_JAR = os.path.join(TOOLS_DIR, "android.jar")
 FIXED_KEYSTORE = os.path.join(TOOLS_DIR, "debug.keystore")
 
 JAVA_OPTS = "-Xms256m -Xmx768m -XX:+UseParallelGC"
@@ -35,7 +36,8 @@ REQUIRED_JARS = [
     ("guava.jar", GUAVA_JAR),
     ("bsh.jar", BSH_JAR),
     ("dx.jar", DX_JAR),
-    ("protobuf.jar", PROTOBUF_JAR)
+    ("protobuf.jar", PROTOBUF_JAR),
+    ("android.jar", ANDROID_JAR)
 ]
 
 def log(tag, msg):
@@ -135,7 +137,6 @@ def pack_preset_plugins_if_exist(work_dir):
 
     target_zip = os.path.join(work_dir, "preset_plugins.zip")
 
-    # 增量判断：若 zip 已经存在且所有源文件均未改动，直接复用
     latest_plugin_mtime = max(os.path.getmtime(f) for f in valid_files)
     if os.path.exists(target_zip) and os.path.getmtime(target_zip) >= latest_plugin_mtime:
         return target_zip
@@ -157,7 +158,6 @@ def extract_original_apk_metadata(input_apk, work_dir):
     curr_size = apk_stat.st_size
     abs_apk_path = os.path.abspath(input_apk)
 
-    # 1. 尝试从缓存读取
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "r", encoding="utf-8") as cf:
@@ -175,7 +175,6 @@ def extract_original_apk_metadata(input_apk, work_dir):
         except Exception:
             pass
 
-    # 2. 缓存未命中，全量解析
     log("INFO", "0. 正在提取官方原包特征指纹...")
     h = hashlib.md5()
     with open(input_apk, "rb") as f:
@@ -201,7 +200,6 @@ def extract_original_apk_metadata(input_apk, work_dir):
     if orig_sig_md5:
         log("OK", f"  -> 原版 签名 MD5: \033[36m{orig_sig_md5}\033[0m")
 
-    # 3. 写入缓存文件
     try:
         with open(cache_file, "w", encoding="utf-8") as cf:
             json.dump({
@@ -232,14 +230,12 @@ def compile_helper_dex_incremental(work_dir):
 
     latest_src_mtime = max(os.path.getmtime(f) for f in java_files)
     
-    # 1. 终极产物检查：所有源码未改动，直接跳过构建
     if os.path.exists(target_dex) and os.path.getmtime(target_dex) >= latest_src_mtime:
         return target_dex
 
     os.makedirs(bin_dir, exist_ok=True)
     os.makedirs(dex_out, exist_ok=True)
 
-    # 2. 单文件精确比对：仅找出发生变更或 class 缺失的 Java 文件
     modified_java = []
     for jf in java_files:
         rel = os.path.relpath(jf, src_dir)
@@ -247,10 +243,9 @@ def compile_helper_dex_incremental(work_dir):
         if not os.path.exists(cf) or os.path.getmtime(jf) > os.path.getmtime(cf):
             modified_java.append(jf)
 
-    # 3. 极速增量 javac 编译
     if modified_java:
         quoted_java = [shlex.quote(f) for f in modified_java]
-        cp_dep = f"{shlex.quote(bin_dir)}:{shlex.quote(DX_JAR)}:{shlex.quote(PROTOBUF_JAR)}"
+        cp_dep = f"{shlex.quote(ANDROID_JAR)}:{shlex.quote(bin_dir)}:{shlex.quote(DX_JAR)}:{shlex.quote(PROTOBUF_JAR)}"
         run_cmd(f"javac -cp {cp_dep} -sourcepath {shlex.quote(src_dir)} -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
 
     patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(bin_dir) for f in fs if f.endswith(".class")]
@@ -258,7 +253,6 @@ def compile_helper_dex_incremental(work_dir):
         log("ERR", "编译 helper java 失败！")
         return None
 
-    # 4. 优化 d8：对体积庞大的第三方库（dx.jar + protobuf.jar）进行持久化 Pre-dex 缓存
     dep_mtime = max(
         os.path.getmtime(DX_JAR) if os.path.exists(DX_JAR) else 0,
         os.path.getmtime(PROTOBUF_JAR) if os.path.exists(PROTOBUF_JAR) else 0
@@ -273,7 +267,6 @@ def compile_helper_dex_incremental(work_dir):
             shutil.move(temp_out, libs_dex)
         shutil.rmtree(libs_temp_dir, ignore_errors=True)
 
-    # 5. 快速打包：仅将 class 与已转译好的 libs_dex 合并，毫秒级产出 classes.dex
     quoted_classes = [shlex.quote(f) for f in patch_classes]
     run_cmd(f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes) + f" {shlex.quote(libs_dex)}")
 
@@ -408,7 +401,6 @@ def main():
     work_dir = "./build_cache"
     os.makedirs(work_dir, exist_ok=True)
 
-    # 阶段 0：提取原包元数据（已增加状态比对与缓存机制）
     orig_apk_md5, orig_sig_md5 = extract_original_apk_metadata(input_apk, work_dir)
 
     t0 = time.time()
@@ -605,7 +597,6 @@ def main():
     else:
         log("INFO", "5. 跳过 APK 签名 (--no-sign)")
 
-    # 关键修复：加入 apk_meta_cache.json 防止指纹缓存被误删
     keep_list = {
         "patcher_bin", 
         "dex_out", 
