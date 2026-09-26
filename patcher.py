@@ -213,65 +213,74 @@ def extract_original_apk_metadata(input_apk, work_dir):
     return orig_apk_md5, orig_sig_md5
 
 def compile_helper_dex_incremental(work_dir):
+    """
+    双分包解耦构建（Zero-Merge 架构）：
+    1. 预编译基础依赖库 Dex (dx + protobuf)，持久缓存，0 秒秒级复用
+    2. 纯业务代码独立编译为 patch_classes.dex，不带入巨型依赖进行二次 Merge，单文件修改 1~2 秒完成
+    """
     src_dir = "./src"
     if not os.path.exists(src_dir):
-        return None
+        return None, None
 
     bin_dir = os.path.join(work_dir, "bin")
     dex_out = os.path.join(work_dir, "dex_out")
-    target_dex = os.path.join(dex_out, "classes.dex")
-    proto_cached_dex = os.path.join(work_dir, "proto_cached.dex")
+    target_patch_dex = os.path.join(dex_out, "patch_classes.dex")
+    libs_cached_dex = os.path.join(work_dir, "libs_cached.dex")
 
     java_files = [os.path.join(r, f) for r, _, fs in os.walk(src_dir) for f in fs if f.endswith(".java")]
     if not java_files:
-        return None
-
-    latest_src_mtime = max(os.path.getmtime(f) for f in java_files)
-    if os.path.exists(target_dex) and os.path.getmtime(target_dex) >= latest_src_mtime:
-        return target_dex
+        return None, None
 
     os.makedirs(bin_dir, exist_ok=True)
     os.makedirs(dex_out, exist_ok=True)
 
-    # 1. 增量 javac 编译
-    modified_java = []
-    for jf in java_files:
-        rel = os.path.relpath(jf, src_dir)
-        cf = os.path.join(bin_dir, os.path.splitext(rel)[0] + ".class")
-        if not os.path.exists(cf) or os.path.getmtime(jf) > os.path.getmtime(cf):
-            modified_java.append(jf)
+    # 1. 预编译基础依赖库 Dex (dx + protobuf)，仅依赖更新时执行一次，后续 0 秒复用
+    dep_mtime = max(
+        os.path.getmtime(DX_JAR) if os.path.exists(DX_JAR) else 0,
+        os.path.getmtime(PROTOBUF_JAR) if os.path.exists(PROTOBUF_JAR) else 0
+    )
+    if not os.path.exists(libs_cached_dex) or os.path.getmtime(libs_cached_dex) < dep_mtime:
+        log("INFO", "检测到基础依赖库更新，正在预编译基础依赖 Dex (dx + protobuf)...")
+        libs_temp_dir = os.path.join(work_dir, "libs_temp")
+        os.makedirs(libs_temp_dir, exist_ok=True)
+        run_cmd(f"d8 --min-api 26 --output {shlex.quote(libs_temp_dir)} {shlex.quote(DX_JAR)} {shlex.quote(PROTOBUF_JAR)}")
+        temp_out = os.path.join(libs_temp_dir, "classes.dex")
+        if os.path.exists(temp_out):
+            shutil.move(temp_out, libs_cached_dex)
+        shutil.rmtree(libs_temp_dir, ignore_errors=True)
 
-    if modified_java:
-        quoted_java = [shlex.quote(f) for f in modified_java]
-        cp_dep = f"{shlex.quote(ANDROID_JAR)}:{shlex.quote(bin_dir)}:{shlex.quote(DX_JAR)}:{shlex.quote(PROTOBUF_JAR)}"
-        run_cmd(f"javac -cp {cp_dep} -sourcepath {shlex.quote(src_dir)} -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
+    # 2. 检查纯业务代码是否需要增量重编
+    latest_src_mtime = max(os.path.getmtime(f) for f in java_files)
+    if not os.path.exists(target_patch_dex) or os.path.getmtime(target_patch_dex) < latest_src_mtime:
+        modified_java = []
+        for jf in java_files:
+            rel = os.path.relpath(jf, src_dir)
+            cf = os.path.join(bin_dir, os.path.splitext(rel)[0] + ".class")
+            if not os.path.exists(cf) or os.path.getmtime(jf) > os.path.getmtime(cf):
+                modified_java.append(jf)
 
-    patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(bin_dir) for f in fs if f.endswith(".class")]
-    if not patch_classes:
-        log("ERR", "编译 helper java 失败！")
-        return None
+        if modified_java:
+            quoted_java = [shlex.quote(f) for f in modified_java]
+            cp_dep = f"{shlex.quote(ANDROID_JAR)}:{shlex.quote(bin_dir)}:{shlex.quote(DX_JAR)}:{shlex.quote(PROTOBUF_JAR)}"
+            run_cmd(f"javac -cp {cp_dep} -sourcepath {shlex.quote(src_dir)} -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
 
-    # 2. 仅预编译轻量级的 protobuf（剔除无用的巨无霸 dx.jar）
-    if os.path.exists(PROTOBUF_JAR):
-        proto_mtime = os.path.getmtime(PROTOBUF_JAR)
-        if not os.path.exists(proto_cached_dex) or os.path.getmtime(proto_cached_dex) < proto_mtime:
-            log("INFO", "检测到 Protobuf 更新，正在预编译缓存 (仅首次)...")
-            proto_temp_dir = os.path.join(work_dir, "proto_temp")
-            os.makedirs(proto_temp_dir, exist_ok=True)
-            run_cmd(f"d8 --min-api 26 --output {shlex.quote(proto_temp_dir)} {shlex.quote(PROTOBUF_JAR)}")
-            temp_out = os.path.join(proto_temp_dir, "classes.dex")
-            if os.path.exists(temp_out):
-                shutil.move(temp_out, proto_cached_dex)
-            shutil.rmtree(proto_temp_dir, ignore_errors=True)
+        patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(bin_dir) for f in fs if f.endswith(".class")]
+        if not patch_classes:
+            log("ERR", "编译 helper java 失败！")
+            return None, None
 
-    # 3. 极速增量 D8：只打包业务 class + 轻量 protobuf（完全免去庞大 dx.jar 的合并开销）
-    quoted_classes = [shlex.quote(f) for f in patch_classes]
-    d8_cmd = f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes)
-    if os.path.exists(proto_cached_dex):
-        d8_cmd += f" {shlex.quote(proto_cached_dex)}"
-    run_cmd(d8_cmd)
+        # 核心：只对业务 class 极速转译 (彻底剥离巨型 dx.jar 的二次 Merge，1~2 秒完成)
+        quoted_classes = [shlex.quote(f) for f in patch_classes]
+        temp_patch_dir = os.path.join(work_dir, "patch_temp")
+        os.makedirs(temp_patch_dir, exist_ok=True)
+        run_cmd(f"d8 --min-api 26 --output {shlex.quote(temp_patch_dir)} " + " ".join(quoted_classes))
+        t_out = os.path.join(temp_patch_dir, "classes.dex")
+        if os.path.exists(t_out):
+            shutil.move(t_out, target_patch_dex)
+        shutil.rmtree(temp_patch_dir, ignore_errors=True)
 
-    return target_dex if os.path.exists(target_dex) else None
+    return (libs_cached_dex if os.path.exists(libs_cached_dex) else None,
+            target_patch_dex if os.path.exists(target_patch_dex) else None)
 
 def compile_bsh_to_asset_dex(work_dir):
     bsh_dex_dir = os.path.join(work_dir, "bsh_dex")
@@ -547,11 +556,11 @@ def main():
     t0 = time.time()
     log("INFO", "1. 正在准备构建环境与扩展 Dex...")
     engine_bin = build_dex_patcher_engine_incremental(work_dir)
-    helper_dex_path = compile_helper_dex_incremental(work_dir)
+    libs_dex_path, patch_dex_path = compile_helper_dex_incremental(work_dir)
     bsh_standalone_dex = compile_bsh_to_asset_dex(work_dir)
     preset_plugins_zip = pack_preset_plugins_if_exist(work_dir)
 
-    if not helper_dex_path:
+    if not patch_dex_path:
         log("ERR", "扩展 Dex 编译失败！")
         sys.exit(1)
     if not no_sign:
@@ -574,7 +583,9 @@ def main():
 
     dex_list = sorted(dex_data_dict.keys(), key=dex_index)
     max_idx = dex_index(dex_list[-1])
-    next_dex_name = f"classes{max_idx + 1}.dex"
+    # 物理双分包：依赖库作为 classes{max_idx+1}.dex，业务代码作为 classes{max_idx+2}.dex
+    libs_dex_name = f"classes{max_idx + 1}.dex"
+    patch_dex_name = f"classes{max_idx + 2}.dex"
 
     all_rules = resolve_dynamic_rules_with_cache(
         dex_data_dict,
@@ -728,10 +739,17 @@ def main():
             shutil.copyfile(local_so, os.path.join(inject_dir, in_zip_so))
             zip_args.append(shlex.quote(in_zip_so))
 
-    if helper_dex_path and os.path.exists(helper_dex_path):
-        target_helper = os.path.join(inject_dir, next_dex_name)
-        shutil.copyfile(helper_dex_path, target_helper)
-        zip_args.append(shlex.quote(next_dex_name))
+    # 4.1 注入基础依赖库 Dex (classes{max_idx+1}.dex)
+    if libs_dex_path and os.path.exists(libs_dex_path):
+        target_libs = os.path.join(inject_dir, libs_dex_name)
+        shutil.copyfile(libs_dex_path, target_libs)
+        zip_args.append(shlex.quote(libs_dex_name))
+
+    # 4.2 注入业务代码 Dex (classes{max_idx+2}.dex)
+    if patch_dex_path and os.path.exists(patch_dex_path):
+        target_patch = os.path.join(inject_dir, patch_dex_name)
+        shutil.copyfile(patch_dex_path, target_patch)
+        zip_args.append(shlex.quote(patch_dex_name))
 
     if bsh_standalone_dex and os.path.exists(bsh_standalone_dex):
         target_assets_dir = os.path.join(inject_dir, "assets")
@@ -791,7 +809,7 @@ def main():
         "bin", 
         "bsh.dex", 
         "bsh_dex", 
-        "proto_cached.dex", 
+        "libs_cached.dex", 
         "preset_plugins.zip",
         "apk_meta_cache.json",
         "dex_cache",
