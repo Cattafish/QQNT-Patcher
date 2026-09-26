@@ -133,7 +133,13 @@ def pack_preset_plugins_if_exist(work_dir):
         return None
 
     target_zip = os.path.join(work_dir, "preset_plugins.zip")
-    log("INFO", f"检测到预设脚本目录 (装载 {len(valid_files)} 个脚本/资源文件)，正在封装预设脚本包...")
+
+    # 增量判断：若 zip 已经存在且所有源文件均未改动，直接复用
+    latest_plugin_mtime = max(os.path.getmtime(f) for f in valid_files)
+    if os.path.exists(target_zip) and os.path.getmtime(target_zip) >= latest_plugin_mtime:
+        return target_zip
+
+    log("INFO", f"检测到预设脚本变动 (装载 {len(valid_files)} 个脚本/资源文件)，正在封装预设脚本包...")
 
     with zipfile.ZipFile(target_zip, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         for file_path in valid_files:
@@ -178,30 +184,58 @@ def compile_helper_dex_incremental(work_dir):
     bin_dir = os.path.join(work_dir, "bin")
     dex_out = os.path.join(work_dir, "dex_out")
     target_dex = os.path.join(dex_out, "classes.dex")
+    libs_dex = os.path.join(work_dir, "libs_cached.dex")
 
     java_files = [os.path.join(r, f) for r, _, fs in os.walk(src_dir) for f in fs if f.endswith(".java")]
     if not java_files:
         return None
 
     latest_src_mtime = max(os.path.getmtime(f) for f in java_files)
+    
+    # 1. 终极产物检查：所有源码未改动，直接跳过构建
     if os.path.exists(target_dex) and os.path.getmtime(target_dex) >= latest_src_mtime:
         return target_dex
 
     os.makedirs(bin_dir, exist_ok=True)
     os.makedirs(dex_out, exist_ok=True)
 
-    quoted_java = [shlex.quote(f) for f in java_files]
-    cp_dep = f"{shlex.quote(DX_JAR)}:{shlex.quote(PROTOBUF_JAR)}"
-    run_cmd(f"javac -cp {cp_dep} -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
+    # 2. 单文件精确比对：仅找出发生变更或 class 缺失的 Java 文件
+    modified_java = []
+    for jf in java_files:
+        rel = os.path.relpath(jf, src_dir)
+        cf = os.path.join(bin_dir, os.path.splitext(rel)[0] + ".class")
+        if not os.path.exists(cf) or os.path.getmtime(jf) > os.path.getmtime(cf):
+            modified_java.append(jf)
+
+    # 3. 极速增量 javac 编译
+    if modified_java:
+        quoted_java = [shlex.quote(f) for f in modified_java]
+        cp_dep = f"{shlex.quote(bin_dir)}:{shlex.quote(DX_JAR)}:{shlex.quote(PROTOBUF_JAR)}"
+        run_cmd(f"javac -cp {cp_dep} -sourcepath {shlex.quote(src_dir)} -d {shlex.quote(bin_dir)} " + " ".join(quoted_java))
 
     patch_classes = [os.path.join(r, f) for r, _, fs in os.walk(bin_dir) for f in fs if f.endswith(".class")]
     if not patch_classes:
         log("ERR", "编译 helper java 失败！")
         return None
 
+    # 4. 优化 d8：对体积庞大的第三方库（dx.jar + protobuf.jar）进行持久化 Pre-dex 缓存
+    dep_mtime = max(
+        os.path.getmtime(DX_JAR) if os.path.exists(DX_JAR) else 0,
+        os.path.getmtime(PROTOBUF_JAR) if os.path.exists(PROTOBUF_JAR) else 0
+    )
+    if not os.path.exists(libs_dex) or os.path.getmtime(libs_dex) < dep_mtime:
+        log("INFO", "检测到依赖库更新，正在预编译基础依赖 Dex (dx + protobuf)...")
+        libs_temp_dir = os.path.join(work_dir, "libs_temp")
+        os.makedirs(libs_temp_dir, exist_ok=True)
+        run_cmd(f"d8 --min-api 26 --output {shlex.quote(libs_temp_dir)} {shlex.quote(DX_JAR)} {shlex.quote(PROTOBUF_JAR)}")
+        temp_out = os.path.join(libs_temp_dir, "classes.dex")
+        if os.path.exists(temp_out):
+            shutil.move(temp_out, libs_dex)
+        shutil.rmtree(libs_temp_dir, ignore_errors=True)
+
+    # 5. 快速打包：仅将 class 与已转译好的 libs_dex 合并，毫秒级产出 classes.dex
     quoted_classes = [shlex.quote(f) for f in patch_classes]
-    d8_extra = f"{shlex.quote(DX_JAR)} {shlex.quote(PROTOBUF_JAR)}"
-    run_cmd(f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes) + f" {d8_extra}")
+    run_cmd(f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes) + f" {shlex.quote(libs_dex)}")
 
     return target_dex if os.path.exists(target_dex) else None
 
@@ -530,9 +564,11 @@ def main():
     else:
         log("INFO", "5. 跳过 APK 签名 (--no-sign)")
 
+    # 关键修复：将各中间产物与预编译 Dex 加入保留白名单，避免每次误删触发重构
+    keep_list = {"patcher_bin", "dex_out", "bin", "bsh.dex", "bsh_dex", "libs_cached.dex", "preset_plugins.zip"}
     for f in os.listdir(work_dir):
-        p = os.path.join(work_dir, f)
-        if f not in ["patcher_bin", "dex_out", "bin"]:
+        if f not in keep_list:
+            p = os.path.join(work_dir, f)
             if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
             else: os.remove(p)
 
