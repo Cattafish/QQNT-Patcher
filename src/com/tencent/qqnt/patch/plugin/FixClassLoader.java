@@ -64,7 +64,7 @@ public class FixClassLoader extends ClassLoader {
                 return loader.loadClass(name);
             } catch (Exception ignored) {}
         }
-        return null;
+        throw new ClassNotFoundException(name);
     }
 
     @Override

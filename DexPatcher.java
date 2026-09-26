@@ -64,22 +64,28 @@ public class DexPatcher {
                         System.out.println("[DexPatcher] [" + cur + "/" + totalTasks + "] " + dexName + " 重构完成，耗时: " + (System.currentTimeMillis() - tTask) + "ms");
                         System.out.flush();
                     } catch (Exception e) {
-                        System.err.println("[ERROR] 处理 " + task.dexIn + " 异常: " + e.getMessage());
-                        try {
-                            copyFile(new File(task.dexIn), new File(task.dexOut));
-                        } catch (IOException ignored) {}
+                        System.err.println("[ERROR] 处理 " + task.dexIn + " 致命异常: " + e.getMessage());
+                        new File(task.dexOut).delete();
+                        throw new RuntimeException("Patch failed for " + task.dexIn, e);
                     }
                 }));
             }
 
+            boolean hasError = false;
             for (Future<?> f : futures) {
                 try {
                     f.get();
                 } catch (Exception e) {
-                    System.err.println("[WARN] 任务执行警告: " + e.getMessage());
+                    System.err.println("[ERROR] 任务执行失败: " + e.getMessage());
+                    hasError = true;
                 }
             }
             executor.shutdown();
+
+            if (hasError) {
+                System.err.println("[ERROR] 存在构建失败的分包，终止构建以防污染缓存！");
+                System.exit(1);
+            }
 
             System.out.println("[DexPatcher] 全部分包重构耗时: " + (System.currentTimeMillis() - t0) + "ms");
             System.out.flush();
@@ -286,7 +292,7 @@ public class DexPatcher {
             StringBuffer sb = new StringBuffer();
             while (methodMatcher.find()) {
                 String mBody = methodMatcher.group(1);
-                String javaReplacement = rule.smali.replace("\\1", "$1").replace("\\2", "$2").replace("\\3", "$3");
+                String javaReplacement = rule.smali.replaceAll("\\\\(\\d+)", "\\$$1");
 
                 Pattern rp = Pattern.compile(rule.regex);
                 Matcher rm = rp.matcher(mBody);

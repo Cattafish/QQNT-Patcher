@@ -11,6 +11,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -19,7 +20,14 @@ import java.util.regex.Pattern;
 public class ShowDownloadTimesModule implements IPatchModule {
 
     private static final String TAG = "GroupFile";
-    private static final Map<String, Integer> sCountMap = Collections.synchronizedMap(new HashMap<>());
+    private static final Map<String, Integer> sCountMap = Collections.synchronizedMap(
+            new LinkedHashMap<String, Integer>(200, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Integer> eldest) {
+                    return size() > 3000;
+                }
+            }
+    );
 
     @Override public String getId() { return "show_file_download_count"; }
     @Override public String getName() { return "群文件显示下载次数"; }
