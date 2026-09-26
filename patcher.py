@@ -220,7 +220,7 @@ def compile_helper_dex_incremental(work_dir):
     bin_dir = os.path.join(work_dir, "bin")
     dex_out = os.path.join(work_dir, "dex_out")
     target_dex = os.path.join(dex_out, "classes.dex")
-    libs_dex = os.path.join(work_dir, "libs_cached.dex")
+    proto_cached_dex = os.path.join(work_dir, "proto_cached.dex")
 
     java_files = [os.path.join(r, f) for r, _, fs in os.walk(src_dir) for f in fs if f.endswith(".java")]
     if not java_files:
@@ -233,6 +233,7 @@ def compile_helper_dex_incremental(work_dir):
     os.makedirs(bin_dir, exist_ok=True)
     os.makedirs(dex_out, exist_ok=True)
 
+    # 1. 增量 javac 编译
     modified_java = []
     for jf in java_files:
         rel = os.path.relpath(jf, src_dir)
@@ -250,22 +251,25 @@ def compile_helper_dex_incremental(work_dir):
         log("ERR", "编译 helper java 失败！")
         return None
 
-    dep_mtime = max(
-        os.path.getmtime(DX_JAR) if os.path.exists(DX_JAR) else 0,
-        os.path.getmtime(PROTOBUF_JAR) if os.path.exists(PROTOBUF_JAR) else 0
-    )
-    if not os.path.exists(libs_dex) or os.path.getmtime(libs_dex) < dep_mtime:
-        log("INFO", "检测到依赖库更新，正在预编译基础依赖 Dex (dx + protobuf)...")
-        libs_temp_dir = os.path.join(work_dir, "libs_temp")
-        os.makedirs(libs_temp_dir, exist_ok=True)
-        run_cmd(f"d8 --min-api 26 --output {shlex.quote(libs_temp_dir)} {shlex.quote(DX_JAR)} {shlex.quote(PROTOBUF_JAR)}")
-        temp_out = os.path.join(libs_temp_dir, "classes.dex")
-        if os.path.exists(temp_out):
-            shutil.move(temp_out, libs_dex)
-        shutil.rmtree(libs_temp_dir, ignore_errors=True)
+    # 2. 仅预编译轻量级的 protobuf（剔除无用的巨无霸 dx.jar）
+    if os.path.exists(PROTOBUF_JAR):
+        proto_mtime = os.path.getmtime(PROTOBUF_JAR)
+        if not os.path.exists(proto_cached_dex) or os.path.getmtime(proto_cached_dex) < proto_mtime:
+            log("INFO", "检测到 Protobuf 更新，正在预编译缓存 (仅首次)...")
+            proto_temp_dir = os.path.join(work_dir, "proto_temp")
+            os.makedirs(proto_temp_dir, exist_ok=True)
+            run_cmd(f"d8 --min-api 26 --output {shlex.quote(proto_temp_dir)} {shlex.quote(PROTOBUF_JAR)}")
+            temp_out = os.path.join(proto_temp_dir, "classes.dex")
+            if os.path.exists(temp_out):
+                shutil.move(temp_out, proto_cached_dex)
+            shutil.rmtree(proto_temp_dir, ignore_errors=True)
 
+    # 3. 极速增量 D8：只打包业务 class + 轻量 protobuf（完全免去庞大 dx.jar 的合并开销）
     quoted_classes = [shlex.quote(f) for f in patch_classes]
-    run_cmd(f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes) + f" {shlex.quote(libs_dex)}")
+    d8_cmd = f"d8 --min-api 26 --output {shlex.quote(dex_out)} " + " ".join(quoted_classes)
+    if os.path.exists(proto_cached_dex):
+        d8_cmd += f" {shlex.quote(proto_cached_dex)}"
+    run_cmd(d8_cmd)
 
     return target_dex if os.path.exists(target_dex) else None
 
@@ -787,7 +791,7 @@ def main():
         "bin", 
         "bsh.dex", 
         "bsh_dex", 
-        "libs_cached.dex", 
+        "proto_cached.dex", 
         "preset_plugins.zip",
         "apk_meta_cache.json",
         "dex_cache",
