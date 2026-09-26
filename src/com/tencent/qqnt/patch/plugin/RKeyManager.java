@@ -5,11 +5,16 @@ import com.tencent.qqnt.patch.PLog;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class RKeyManager {
 
     private static final String TAG = "RKeyManager";
     private static final String CMD_RKEY = "OidbSvcTrpcTcp.0x9067_202";
+
+    // 匹配合法的 URL-Safe Base64 密钥，并在遇到非 Base64 字符（如二进制乱码）时立即截断
+    private static final Pattern RKEY_PATTERN = Pattern.compile("&?rkey=([A-Za-z0-9_-]{30,120})");
 
     private static volatile String sFriendRKey = "";
     private static volatile String sGroupRKey = "";
@@ -45,21 +50,22 @@ public class RKeyManager {
             System.arraycopy(buf, offset, data, 0, data.length);
 
             String content = new String(data, StandardCharsets.ISO_8859_1);
-            int idx1 = content.indexOf("&rkey=");
-            if (idx1 != -1) {
-                int end1 = content.indexOf('\u0000', idx1);
-                if (end1 == -1) end1 = Math.min(content.length(), idx1 + 160);
-                sFriendRKey = content.substring(idx1, end1);
+            Matcher m = RKEY_PATTERN.matcher(content);
 
-                int idx2 = content.indexOf("&rkey=", end1);
-                if (idx2 != -1) {
-                    int end2 = content.indexOf('\u0000', idx2);
-                    if (end2 == -1) end2 = Math.min(content.length(), idx2 + 160);
-                    sGroupRKey = content.substring(idx2, end2);
+            if (m.find()) {
+                // 命中第一个密钥：通常为好友私聊密钥
+                sFriendRKey = "&rkey=" + m.group(1);
+                
+                if (m.find()) {
+                    // 命中第二个密钥：群聊密钥
+                    sGroupRKey = "&rkey=" + m.group(1);
                 } else {
                     sGroupRKey = sFriendRKey;
                 }
-                PLog.i(TAG, "已成功捕获高清图片密钥: " + sFriendRKey);
+
+                PLog.i(TAG, "已成功捕获纯净高清图片密钥:");
+                PLog.i(TAG, "  ├─ 私聊 RKey: " + sFriendRKey);
+                PLog.i(TAG, "  └─ 群聊 RKey: " + sGroupRKey);
             }
         } catch (Throwable t) {
             PLog.e(TAG, "解析 RKey 报文异常", t);
