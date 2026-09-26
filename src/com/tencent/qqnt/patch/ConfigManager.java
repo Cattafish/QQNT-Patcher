@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class ConfigManager {
 
-    public static final String VERSION = "v0.1.1";
+    public static final String VERSION = "v0.1.2";
     public static final String GITHUB_REPO = "Cattafish/QQNT-Patcher";
     public static final String TG_CHANNEL_URL = "https://t.me/ZcraftMod";
     public static final String GITHUB_REPO_URL = "https://github.com/" + GITHUB_REPO;
