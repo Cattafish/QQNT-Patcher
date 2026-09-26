@@ -340,35 +340,87 @@ public class AntiRevokeModule implements IPatchModule {
         String myUin = MsgSender.getMyUin();
 
         if (revokeType == 1) {
-            long groupUin = Proto.getVarint(opBytes, 4);
-            String groupCode = (groupUin > 0) ? String.valueOf(groupUin) : Proto.getString(headerBytes, 2);
+            String groupCode = "";
+
+            // 1. 【核心解析群号】从 headerBytes 提取
+            // 方式 A: headerBytes Tag 2 直接是 UTF-8 群号字符串 (如 "655947600")
+            String gCodeStr = Proto.getString(headerBytes, 2);
+            if (gCodeStr != null && !gCodeStr.isEmpty() && gCodeStr.matches("\\d+")) {
+                groupCode = gCodeStr;
+            }
+
+            // 方式 B: headerBytes Tag 1 是 Varint 群号数值 (如 655947600)
+            if (groupCode.isEmpty()) {
+                long gCodeVal = Proto.getVarint(headerBytes, 1);
+                if (gCodeVal > 10000L) {
+                    groupCode = String.valueOf(gCodeVal);
+                }
+            }
+
+            // 2. 【核心解析操作体】自适应处理 7 字节前缀
+            byte[] opBytesSkip7 = (opBytes.length > 7) ? Proto.subArray(opBytes, 7) : opBytes;
+
+            // 方式 C 备用群号: opBytesSkip7 Tag 4 是 Varint 群号
+            if (groupCode.isEmpty()) {
+                long g4 = Proto.getVarint(opBytesSkip7, 4);
+                if (g4 > 10000L) groupCode = String.valueOf(g4);
+            }
 
             String operatorUid = "";
             String senderUid = "";
             long msgSeq = 0L;
 
-            byte[] tag11 = Proto.getBytes(opBytes, 11);
+            // ★ 结构 1 (真实抓包核心结构): opBytesSkip7 -> Tag 11 包含详情
+            byte[] tag11 = Proto.getBytes(opBytesSkip7, 11);
             if (tag11 != null) {
                 operatorUid = Proto.getString(tag11, 1);
                 byte[] tag3 = Proto.getBytes(tag11, 3);
                 if (tag3 != null) {
                     msgSeq = Proto.getVarint(tag3, 1);    // 真实 msgSeq
-                    senderUid = Proto.getString(tag3, 6); // 成员 UID
+                    senderUid = Proto.getString(tag3, 6); // 原发送者 UID
                 }
             }
 
-            if (msgSeq == 0) msgSeq = Proto.getVarint(opBytes, 37);
+            // ★ 结构 2 (QFun 结构): opBytesSkip7 -> Tag 1 包含详情
+            if (msgSeq == 0) {
+                byte[] tag1 = Proto.getBytes(opBytesSkip7, 1);
+                if (tag1 != null) {
+                    if (operatorUid.isEmpty()) operatorUid = Proto.getString(tag1, 1);
+                    byte[] tag3 = Proto.getBytes(tag1, 3);
+                    if (tag3 != null) {
+                        msgSeq = Proto.getVarint(tag3, 1);
+                        if (senderUid.isEmpty()) senderUid = Proto.getString(tag3, 6);
+                    }
+                }
+            }
+
+            // ★ 结构 3 (未带 7 字节前缀的新通道直接解析)
+            if (msgSeq == 0) {
+                byte[] tag11Direct = Proto.getBytes(opBytes, 11);
+                if (tag11Direct != null) {
+                    if (operatorUid.isEmpty()) operatorUid = Proto.getString(tag11Direct, 1);
+                    byte[] tag3 = Proto.getBytes(tag11Direct, 3);
+                    if (tag3 != null) {
+                        msgSeq = Proto.getVarint(tag3, 1);
+                        if (senderUid.isEmpty()) senderUid = Proto.getString(tag3, 6);
+                    }
+                }
+            }
+
+            // 兜底 UID
             if (operatorUid.isEmpty()) operatorUid = findFirstUidSafe(opBytes);
+            if (senderUid.isEmpty()) senderUid = operatorUid;
 
-            // 只有自己撤回自己的消息，才放行
+            // 3. 【本人主动撤回判定】只要是本人执行的撤回操作（无论是撤回自己的还是管理代撤回），直接放行生效
             if (selfUid != null && !selfUid.isEmpty() && selfUid.equals(operatorUid)) {
-                if (senderUid.isEmpty() || senderUid.equals(selfUid)) {
-                    PLog.d(TAG, "本人主动撤回自己的消息，放行生效");
-                    return true;
-                }
+                PLog.d(TAG, "本人主动执行撤回操作，放行生效");
+                return true;
             }
 
-            if (groupCode.isEmpty()) return false;
+            if (groupCode.isEmpty()) {
+                PLog.w(TAG, "未能解析到有效群号，放弃生成灰条");
+                return false;
+            }
 
             String cacheKey = "grp_" + groupCode + "_seq_" + msgSeq;
             if (msgSeq > 0 && !sRevokedCache.add(cacheKey)) {
@@ -380,7 +432,6 @@ public class AntiRevokeModule implements IPatchModule {
 
             String json;
             if (!senderUid.isEmpty() && !senderUid.equals(operatorUid)) {
-                // ★ 判定被撤回的原作者是否为当前账号自己
                 boolean isSenderSelf = (selfUid != null && !selfUid.isEmpty() && selfUid.equals(senderUid));
                 String senderUin = getUin(senderUid);
                 if (!isSenderSelf && myUin != null && !myUin.isEmpty() && myUin.equals(senderUin)) {
@@ -410,6 +461,7 @@ public class AntiRevokeModule implements IPatchModule {
             }
             if (operatorUid.isEmpty()) operatorUid = Proto.getString(headerBytes, 2);
 
+            // 私聊本人主动撤回直接放行
             if (selfUid != null && !selfUid.isEmpty() && selfUid.equals(operatorUid)) {
                 return true;
             }
