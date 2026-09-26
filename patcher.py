@@ -136,13 +136,11 @@ def pack_preset_plugins_if_exist(work_dir):
         return None
 
     target_zip = os.path.join(work_dir, "preset_plugins.zip")
-
     latest_plugin_mtime = max(os.path.getmtime(f) for f in valid_files)
     if os.path.exists(target_zip) and os.path.getmtime(target_zip) >= latest_plugin_mtime:
         return target_zip
 
     log("INFO", f"检测到预设脚本变动 (装载 {len(valid_files)} 个脚本/资源文件)，正在封装预设脚本包...")
-
     with zipfile.ZipFile(target_zip, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
         for file_path in valid_files:
             arcname = os.path.relpath(file_path, PRESET_PLUGINS_DIR)
@@ -229,7 +227,6 @@ def compile_helper_dex_incremental(work_dir):
         return None
 
     latest_src_mtime = max(os.path.getmtime(f) for f in java_files)
-    
     if os.path.exists(target_dex) and os.path.getmtime(target_dex) >= latest_src_mtime:
         return target_dex
 
@@ -377,19 +374,155 @@ def print_patch_details(dex_name, rule_list):
             print(f"     \033[90m│\033[0m {sl}")
         print()
 
+def compute_dex_patch_key(raw_dex_bytes, rules_list):
+    h = hashlib.sha256()
+    h.update(hashlib.md5(raw_dex_bytes).hexdigest().encode('utf-8'))
+    rules_dump = json.dumps(rules_list, sort_keys=True, ensure_ascii=False)
+    h.update(rules_dump.encode('utf-8'))
+    return h.hexdigest()[:16]
+
+def get_file_mtime_safe(file_path):
+    try:
+        return os.path.getmtime(file_path)
+    except Exception:
+        return 0
+
+def resolve_dynamic_rules_with_cache(dex_data_dict, orig_apk_md5, orig_sig_md5, work_dir):
+    """
+    针对阶段 2 的细粒度规则推导缓存引擎：
+    各个规则模块独立判断文件修改时间，没改的模块 0 秒秒读缓存，改动的模块才重新扫描。
+    """
+    cache_path = os.path.join(work_dir, "rule_discovery_cache.json")
+    cache_data = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if loaded.get("apk_md5") == orig_apk_md5:
+                    cache_data = loaded.get("modules", {})
+        except Exception:
+            cache_data = {}
+
+    rules_dir = os.path.abspath("./rules")
+    new_cache_modules = dict(cache_data)
+    all_rules = list(rules.RULES)
+
+    # 1. 安全穿透规则 (security_rules.py)
+    sec_py = os.path.join(rules_dir, "security_rules.py")
+    sec_mtime = get_file_mtime_safe(sec_py)
+    cached_sec = cache_data.get("security")
+    if cached_sec and cached_sec.get("mtime") == sec_mtime and "rules" in cached_sec:
+        dynamic_sec_rules = cached_sec["rules"]
+        log("INFO", f"规则推导缓存命中: [安全穿透规则] ({len(dynamic_sec_rules)} 项)")
+    else:
+        dynamic_sec_rules = rules.get_dynamic_security_rules(dex_data_dict, orig_apk_md5, orig_sig_md5)
+        new_cache_modules["security"] = {"mtime": sec_mtime, "rules": dynamic_sec_rules}
+        for r in dynamic_sec_rules:
+            log("OK", f"-> 安全穿透规则生成: [{r['name']}]")
+    all_rules.extend(dynamic_sec_rules)
+
+    # 2. 设置入口匹配 (setting_rules.py)
+    set_py = os.path.join(rules_dir, "setting_rules.py")
+    set_mtime = get_file_mtime_safe(set_py)
+    cached_set = cache_data.get("setting")
+    if cached_set and cached_set.get("mtime") == set_mtime and "rule" in cached_set:
+        dyn_setting_rule = cached_set["rule"]
+        if dyn_setting_rule:
+            log("INFO", f"规则推导缓存命中: [{dyn_setting_rule['name']}]")
+            all_rules.append(dyn_setting_rule)
+    else:
+        dyn_setting_rule = rules.get_dynamic_setting_rule_fast(dex_data_dict)
+        new_cache_modules["setting"] = {"mtime": set_mtime, "rule": dyn_setting_rule}
+        if dyn_setting_rule:
+            log("OK", f"-> 设置入口匹配: [{dyn_setting_rule['name']}]")
+            all_rules.append(dyn_setting_rule)
+
+    # 3. 群文件下载次数 (group_file_rules.py)
+    gf_py = os.path.join(rules_dir, "group_file_rules.py")
+    gf_mtime = get_file_mtime_safe(gf_py)
+    cached_gf = cache_data.get("group_file")
+    if cached_gf and cached_gf.get("mtime") == gf_mtime and "rules" in cached_gf:
+        dyn_file_rules = cached_gf["rules"]
+        log("INFO", f"规则推导缓存命中: [群文件下载次数] ({len(dyn_file_rules)} 项)")
+    else:
+        dyn_file_rules = rules.get_dynamic_group_file_rules(dex_data_dict)
+        new_cache_modules["group_file"] = {"mtime": gf_mtime, "rules": dyn_file_rules}
+        for r in dyn_file_rules:
+            log("OK", f"-> 群文件下载次数动态匹配: [{r['name']}]")
+    all_rules.extend(dyn_file_rules)
+
+    # 4. 平板模式 (tablet_rules.py)
+    tab_py = os.path.join(rules_dir, "tablet_rules.py")
+    tab_mtime = get_file_mtime_safe(tab_py)
+    cached_tab = cache_data.get("tablet")
+    if cached_tab and cached_tab.get("mtime") == tab_mtime and "rule" in cached_tab:
+        dyn_tablet_rule = cached_tab["rule"]
+        if dyn_tablet_rule:
+            log("INFO", f"规则推导缓存命中: [{dyn_tablet_rule['name']}]")
+            all_rules.append(dyn_tablet_rule)
+    else:
+        dyn_tablet_rule = rules.get_dynamic_tablet_rule_fast(dex_data_dict)
+        new_cache_modules["tablet"] = {"mtime": tab_mtime, "rule": dyn_tablet_rule}
+        if dyn_tablet_rule:
+            log("OK", f"-> 平板模式动态匹配: [{dyn_tablet_rule['name']}]")
+            all_rules.append(dyn_tablet_rule)
+
+    # 5. 群待办通知 (troop_todo_rules.py)
+    todo_py = os.path.join(rules_dir, "troop_todo_rules.py")
+    todo_mtime = get_file_mtime_safe(todo_py)
+    cached_todo = cache_data.get("troop_todo")
+    if cached_todo and cached_todo.get("mtime") == todo_mtime and "rule" in cached_todo:
+        dyn_todo_rule = cached_todo["rule"]
+        if dyn_todo_rule:
+            log("INFO", f"规则推导缓存命中: [{dyn_todo_rule['name']}]")
+            all_rules.append(dyn_todo_rule)
+    else:
+        dyn_todo_rule = rules.get_dynamic_troop_todo_rule(dex_data_dict)
+        new_cache_modules["troop_todo"] = {"mtime": todo_mtime, "rule": dyn_todo_rule}
+        if dyn_todo_rule:
+            log("OK", f"-> 群待办通知动态匹配: [{dyn_todo_rule['name']}]")
+            all_rules.append(dyn_todo_rule)
+
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({"apk_md5": orig_apk_md5, "modules": new_cache_modules}, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+    return all_rules
+
 def main():
     t_start = time.time()
     ensure_smali_jars()
 
     args = sys.argv[1:]
     no_sign = False
+    skip_dex_patch = False
+    skipped_keywords = []
+    only_keywords = []
 
     if "--no-sign" in args:
-        no_sign = True
-        args.remove("--no-sign")
+        no_sign = True; args.remove("--no-sign")
     if "-n" in args:
-        no_sign = True
-        args.remove("-n")
+        no_sign = True; args.remove("-n")
+    if "--skip-dex-patch" in args:
+        skip_dex_patch = True; args.remove("--skip-dex-patch")
+
+    while "--skip" in args:
+        idx = args.index("--skip")
+        if idx + 1 < len(args):
+            skipped_keywords.append(args[idx + 1])
+            del args[idx:idx + 2]
+        else:
+            args.remove("--skip")
+
+    while "--only" in args:
+        idx = args.index("--only")
+        if idx + 1 < len(args):
+            only_keywords.append(args[idx + 1])
+            del args[idx:idx + 2]
+        else:
+            args.remove("--only")
 
     input_apk = args[0] if len(args) > 0 else "QQ.apk"
     output_apk = args[1] if len(args) > 1 else "QQ_Patched.apk"
@@ -399,7 +532,11 @@ def main():
         sys.exit(1)
 
     work_dir = "./build_cache"
+    dex_cache_dir = os.path.join(work_dir, "dex_cache")
+    so_cache_dir = os.path.join(work_dir, "so_cache")
     os.makedirs(work_dir, exist_ok=True)
+    os.makedirs(dex_cache_dir, exist_ok=True)
+    os.makedirs(so_cache_dir, exist_ok=True)
 
     orig_apk_md5, orig_sig_md5 = extract_original_apk_metadata(input_apk, work_dir)
 
@@ -435,42 +572,52 @@ def main():
     max_idx = dex_index(dex_list[-1])
     next_dex_name = f"classes{max_idx + 1}.dex"
 
-    all_rules = list(rules.RULES)
-
-    dynamic_sec_rules = rules.get_dynamic_security_rules(
+    all_rules = resolve_dynamic_rules_with_cache(
         dex_data_dict,
-        orig_apk_md5=orig_apk_md5,
-        orig_sig_md5=orig_sig_md5
+        orig_apk_md5,
+        orig_sig_md5,
+        work_dir
     )
-    all_rules.extend(dynamic_sec_rules)
-    for r in dynamic_sec_rules:
-        log("OK", f"-> 安全穿透规则生成: [{r['name']}]")
 
-    dyn_setting_rule = rules.get_dynamic_setting_rule_fast(dex_data_dict)
-    if dyn_setting_rule:
-        all_rules.append(dyn_setting_rule)
-        log("OK", f"-> 设置入口匹配: [{dyn_setting_rule['name']}]")
+    filtered_rules = []
+    for r in all_rules:
+        r_name = r.get("name", "")
+        if only_keywords and not any(k in r_name for k in only_keywords):
+            continue
+        if skipped_keywords and any(k in r_name for k in skipped_keywords):
+            log("WARN", f"-> 调试跳过规则: [{r_name}]")
+            continue
+        filtered_rules.append(r)
+    all_rules = filtered_rules
 
-    dyn_file_rules = rules.get_dynamic_group_file_rules(dex_data_dict)
-    for r in dyn_file_rules:
-        all_rules.append(r)
-        log("OK", f"-> 群文件下载次数动态匹配: [{r['name']}]")
+    dex_classes_cache_file = os.path.join(work_dir, "dex_classes_map.json")
+    dex_classes_map = {}
+    if os.path.exists(dex_classes_cache_file):
+        try:
+            with open(dex_classes_cache_file, "r", encoding="utf-8") as f:
+                c_data = json.load(f)
+                if c_data.get("apk_md5") == orig_apk_md5:
+                    dex_classes_map = {k: set(v) for k, v in c_data.get("map", {}).items()}
+        except Exception:
+            dex_classes_map = {}
 
-    dyn_tablet_rule = rules.get_dynamic_tablet_rule_fast(dex_data_dict)
-    if dyn_tablet_rule:
-        all_rules.append(dyn_tablet_rule)
-        log("OK", f"-> 平板模式动态匹配: [{dyn_tablet_rule['name']}]")
-
-    dyn_todo_rule = rules.get_dynamic_troop_todo_rule(dex_data_dict)
-    if dyn_todo_rule:
-        all_rules.append(dyn_todo_rule)
-        log("OK", f"-> 群待办通知动态匹配: [{dyn_todo_rule['name']}]")
+    if not dex_classes_map:
+        for dex_name in dex_list:
+            dex_classes_map[dex_name] = get_defined_classes_in_dex(dex_data_dict[dex_name])
+        try:
+            with open(dex_classes_cache_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "apk_md5": orig_apk_md5,
+                    "map": {k: list(v) for k, v in dex_classes_map.items()}
+                }, f)
+        except Exception:
+            pass
 
     dex_to_rules = {}
     matched_rule_names = set()
 
     for dex_name in dex_list:
-        defined_classes = get_defined_classes_in_dex(dex_data_dict[dex_name])
+        defined_classes = dex_classes_map[dex_name]
         for rule in all_rules:
             if rule["target_class"] in defined_classes:
                 dex_to_rules.setdefault(dex_name, []).append(rule)
@@ -480,10 +627,6 @@ def main():
         if rule["name"] not in matched_rule_names:
             log("WARN", f"-> 规则未命中当前包: [{rule['name']}]")
 
-    for d_name, r_list in dex_to_rules.items():
-        log("INFO", f"-> 分包 [{d_name}] 装载 {len(r_list)} 条修改规则")
-        print_patch_details(d_name, r_list)
-
     t_phase2 = round(time.time() - t0, 2)
     log("TIME", f"  -> 阶段 2 耗时: {t_phase2}s")
 
@@ -491,26 +634,65 @@ def main():
     log("INFO", f"3. 正在执行 Dex 字节码内存 AST 重构 ({len(dex_to_rules)} 个分包)...")
     dex_tasks = []
     modified_dex_files = []
+    cached_hit_count = 0
 
-    for dex_name, r_list in dex_to_rules.items():
-        dex_raw_path = os.path.join(work_dir, dex_name)
-        with open(dex_raw_path, "wb") as f:
-            f.write(dex_data_dict[dex_name])
+    if skip_dex_patch:
+        log("WARN", "已开启 --skip-dex-patch: 跳过所有宿主 Dex 重构！")
+    else:
+        for dex_name, r_list in dex_to_rules.items():
+            raw_dex_bytes = dex_data_dict[dex_name]
+            cache_key = compute_dex_patch_key(raw_dex_bytes, r_list)
+            cached_dex_file = os.path.join(dex_cache_dir, f"{dex_name}_{cache_key}.dex")
+            target_out_dex = os.path.join(work_dir, f"patched_{dex_name}")
 
-        patched_dex = os.path.join(work_dir, f"patched_{dex_name}")
-        dex_tasks.append((dex_raw_path, patched_dex, r_list))
-        modified_dex_files.append((patched_dex, dex_name))
+            if os.path.exists(cached_dex_file) and os.path.getsize(cached_dex_file) > 0:
+                shutil.copyfile(cached_dex_file, target_out_dex)
+                modified_dex_files.append((target_out_dex, dex_name))
+                cached_hit_count += 1
+                continue
 
-    batch_cfg_path = os.path.join(work_dir, "batch_tasks.txt")
-    dump_batch_tasks(dex_tasks, batch_cfg_path)
+            dex_raw_path = os.path.join(work_dir, dex_name)
+            with open(dex_raw_path, "wb") as f:
+                f.write(raw_dex_bytes)
 
-    if engine_bin:
-        cp = f"{shlex.quote(engine_bin)}:{shlex.quote(GUAVA_JAR)}:{shlex.quote(DEXLIB2_JAR)}:{shlex.quote(SMALI_JAR)}:{shlex.quote(BAKSMALI_JAR)}"
-        cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
-        run_cmd_stream(cmd)
+            dex_tasks.append((dex_raw_path, target_out_dex, r_list, cached_dex_file))
+            modified_dex_files.append((target_out_dex, dex_name))
 
-    log("INFO", "3.1 正在扫描底层 Native SO 安全探针...")
-    patched_so_files = native_patcher.patch_native_so(input_apk, work_dir, log_func=log)
+            log("INFO", f"-> 分包 [{dex_name}] 规则或源码变动，需重构 ({len(r_list)} 条修改规则)")
+            print_patch_details(dex_name, r_list)
+
+        if cached_hit_count > 0:
+            log("OK", f"分包缓存命中: {cached_hit_count} 个分包未变动，直接复用")
+
+        if dex_tasks:
+            batch_tasks_for_engine = [(t[0], t[1], t[2]) for t in dex_tasks]
+            batch_cfg_path = os.path.join(work_dir, "batch_tasks.txt")
+            dump_batch_tasks(batch_tasks_for_engine, batch_cfg_path)
+
+            if engine_bin:
+                cp = f"{shlex.quote(engine_bin)}:{shlex.quote(GUAVA_JAR)}:{shlex.quote(DEXLIB2_JAR)}:{shlex.quote(SMALI_JAR)}:{shlex.quote(BAKSMALI_JAR)}"
+                cmd = f"java {JAVA_OPTS} -cp {cp} com.tencent.qqnt.patcher.DexPatcher {shlex.quote(batch_cfg_path)}"
+                run_cmd_stream(cmd)
+
+            for _, target_out_dex, _, cached_dex_file in dex_tasks:
+                if os.path.exists(target_out_dex) and os.path.getsize(target_out_dex) > 0:
+                    shutil.copyfile(target_out_dex, cached_dex_file)
+        else:
+            log("OK", "全部分包均命中缓存，跳过 Dex 编译流程")
+
+    cached_so_file = os.path.join(so_cache_dir, f"libcodecwrapperV2_{orig_apk_md5}.so")
+    patched_so_files = []
+    if os.path.exists(cached_so_file) and os.path.getsize(cached_so_file) > 0:
+        target_so_entry = "lib/arm64-v8a/libcodecwrapperV2.so"
+        patched_so_files.append((cached_so_file, target_so_entry))
+        log("OK", "-> Native SO 命中缓存，秒级复用")
+    else:
+        log("INFO", "3.1 正在扫描底层 Native SO 安全探针...")
+        new_so_files = native_patcher.patch_native_so(input_apk, work_dir, log_func=log)
+        for local_so, in_zip_so in new_so_files:
+            if "libcodecwrapperV2.so" in in_zip_so:
+                shutil.copyfile(local_so, cached_so_file)
+            patched_so_files.append((local_so, in_zip_so))
 
     del dex_data_dict
     t_phase3 = round(time.time() - t0, 2)
@@ -524,6 +706,8 @@ def main():
         shutil.copyfile(input_apk, output_apk)
 
     inject_dir = os.path.join(work_dir, "inject")
+    if os.path.exists(inject_dir):
+        shutil.rmtree(inject_dir, ignore_errors=True)
     os.makedirs(inject_dir, exist_ok=True)
 
     zip_args = []
@@ -605,7 +789,11 @@ def main():
         "bsh_dex", 
         "libs_cached.dex", 
         "preset_plugins.zip",
-        "apk_meta_cache.json"
+        "apk_meta_cache.json",
+        "dex_cache",
+        "so_cache",
+        "rule_discovery_cache.json",
+        "dex_classes_map.json"
     }
     for f in os.listdir(work_dir):
         if f not in keep_list:

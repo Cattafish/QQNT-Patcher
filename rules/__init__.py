@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""rules 统一入口：纯路由导出层"""
+"""rules 统一入口：纯路由导出与特性开关层"""
 
 from .base_rules import BASE_RULES
 from .security_rules import build_security_rules
@@ -9,11 +9,40 @@ from .group_file_rules import build_group_file_rules
 from .troop_todo_rules import build_troop_todo_rule
 from .parser import FastDexParser
 
-RULES = list(BASE_RULES)
+# =========================================================================
+# ★ 特性总控开关：默认全部为 True！无需额外写代码，新功能默认构建
+# （如果某天调试想彻底关闭某块，将对应值设为 False 即可）
+# =========================================================================
+FEATURES = {
+    "BASE": True,            # 基础总线规则 (MSF、AIO长按菜单、收发消息)
+    "SECURITY": True,        # 反风控、致盲查签
+    "SETTINGS": True,        # QQ 设置中心挂载
+    "GROUP_FILE": True,      # 群文件下载次数
+    "TABLET_MODE": True,     # 平板模式
+    "TROOP_TODO": True,      # 静默群待办
+}
 
-# 统一对外方法别名（保持 patcher.py 无缝调用）
-get_dynamic_security_rules = build_security_rules
-get_dynamic_setting_rule_fast = build_setting_rule
-get_dynamic_tablet_rule_fast = build_tablet_rule
-get_dynamic_group_file_rules = build_group_file_rules
-get_dynamic_troop_todo_rule = build_troop_todo_rule
+def get_base_rules():
+    return list(BASE_RULES) if FEATURES.get("BASE", True) else []
+
+def get_dynamic_security_rules(dex_data_dict, orig_apk_md5="", orig_sig_md5=""):
+    if not FEATURES.get("SECURITY", True): return []
+    return build_security_rules(dex_data_dict, orig_apk_md5, orig_sig_md5)
+
+def get_dynamic_setting_rule_fast(dex_data_dict):
+    if not FEATURES.get("SETTINGS", True): return None
+    return build_setting_rule(dex_data_dict)
+
+def get_dynamic_tablet_rule_fast(dex_data_dict):
+    if not FEATURES.get("TABLET_MODE", True): return None
+    return build_tablet_rule(dex_data_dict)
+
+def get_dynamic_group_file_rules(dex_data_dict):
+    if not FEATURES.get("GROUP_FILE", True): return []
+    return build_group_file_rules(dex_data_dict)
+
+def get_dynamic_troop_todo_rule(dex_data_dict):
+    if not FEATURES.get("TROOP_TODO", True): return None
+    return build_troop_todo_rule(dex_data_dict)
+
+RULES = get_base_rules()
