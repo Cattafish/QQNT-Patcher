@@ -13,10 +13,11 @@ QQNT-Patcher 是一款针对 Android QQNT 架构的自动化静态字节码修�
 
 ### 为什么采用静态 Patch
 1. **规避框架特征检测**：核心修改直接固化于 Dex 字节码与 Native 指令中，运行时与官方原生代码无异，杜绝 Xposed / LSPosed 框架堆栈与特征检测。
-2. **底层 Native 查签穿透**：针对 arm64-v8a 底层 `libcodecwrapperV2.so` 等关键库进行精准指令级对齐替换（原位 Bypass 校验跳转），从根本上避免签名校验异常。
-3. **内存级 AST 流式重构**：基于 `dexlib2` 的内存流式修改技术，免去解压数十万 Smali 碎文件的磁盘 I/O 瓶颈，秒级完成重构。
-4. **动态脚本生态扩展**：内置现代 BeanShell 3 运行时与原生 SSO 协议发包管道，全面兼容 QFun 生态的动态 Java 脚本。
-5. **4 字节页面对齐**：构建链自动执行 `zipalign` 4 字节对齐，深度优化在 Android 11~15 系统上的冷启动加载效率与内存占用。
+2. **底层 Native 查签穿透**：针对 arm64-v8a 底层 `libcodecwrapperV2.so` 进行精准指令级对齐替换（原位 Bypass 校验跳转），从根本上避免签名校验异常。
+3. **全闭环纯内存 AST 流式重构**：深度打通 Smali 底层 ANTLR 词法/语法分析器与 Dexlib2 `MemoryDataStore` 管道，在 JVM 堆内存中即时完成 AST 遍历与字节码装配，全程零临时文件落盘，彻底消除闪存磨损与多线程 I/O 竞争。
+4. **规范化纯净编译链**：工程已剥离所有手写伪桩，统一接入标准 Android SDK 编译期桩库（`android.jar`），杜绝生成 DEX 被冗余系统类污染，从源头保证运行稳定性。
+5. **动态脚本生态扩展**：内置现代 BeanShell 3 运行时与原生 SSO 协议发包管道，全面兼容 QFun 生态的动态 Java 脚本。
+6. **4 字节页面对齐**：构建链自动执行 `zipalign` 4 字节对齐，深度优化在 Android 11~15 系统上的冷启动加载效率与内存占用。
 
 ---
 
@@ -30,55 +31,38 @@ QQNT-Patcher 是一款针对 Android QQNT 架构的自动化静态字节码修�
 
 ## 当前功能特性
 
-### 1. 动态脚本扩展引擎（兼容 QFun 生态）
-- **免框架热插拔运行**：支持使用标准 **Java 语法**（完整支持 Lambda 表达式与流式 API）编写扩展脚本，存放于外部存储目录即可被引擎热载执行。
-- **底层 SSO 网络协议发包**：内置 `PacketHelper`、`MsgSender` 与 `FunProtoData`，打通底层管道，支持脚本直接向服务端构造并投递二进制 Protobuf / OIDB 协议报文。
-- **发送消息全家桶**：支持发送纯文本、富文本（图文混排、@成员）、高清图片、Silk 语音（支持精确毫秒时长）、Ark 卡片、短视频、文件、回复特定消息、拍一拍与主动撤回。
-- **群管全功能覆盖**：支持禁言（单人/全员）、踢人、修改群名片、设置管理员、设置专属头衔、群打卡、获取群成员列表与禁言列表。
-- **凭证与高清密钥获取**：一键提取 `Skey`、`Pskey`、`Pt4Token`、`GTK`、`bkn`，并自动嗅探捕获聊天中高清图片的 `RKey` 鉴权参数。
+### 1. 核心功能模块
+- **消息防撤回**：拦截私聊与群聊实时撤回，树形递归过滤后台同步包，自身撤回正常放行；生成可点击打开资料卡、点击定位并高亮原消息的富文本交互灰条。
+- **闪照破解与画廊放行**：实时推送与历史闪照自动转为普通图片并支持长按保存，解除 AIO 沉浸式画廊对闪照资源的查看与下载限制。
+- **静默 @全体 与群待办**：拦截群内 `@全体成员` 强提醒与 `0x135` / 天枢群待办弹窗，仅放行真正 `@我` 的消息。
+- **群文件显示下载次数**：动态拦截并解析群文件列表回包，在文件列表与卡片上直观显示下载次数（兼容 9.2.90 ~ 9.3.60+ 新旧渲染通道）。
+- **发送 APK 自动重命名**：本地发送 `.apk` 文件时自动读取内部应用名与版本号，规范化重命名为 `应用名_版本号.APK`，防止被系统或平台策略拦截。
+- **强制平板模式**：全动态穿透设备类型判定，强制开启 QQ 原厂双栏折叠屏/平板 UI 布局（需重启生效）。
+- **喵喵助手**：发送消息时自动进行人称替换（“你” $\to$ “主人”、“我” $\to$ “猫猫”），智能识别尾部标点与括号并适配喵化尾缀。
+- **会话感知悬浮球**：仅在进入聊天会话（AIO）时自动显示悬浮球，支持拖动与贴边停靠，退出聊天自动隐藏，一键唤出脚本快捷动作面板。
+- **气泡长按菜单扩展**：支持脚本将自定义功能项注册到原生消息气泡长按弹出的上下文菜单中。
+
+### 2. 动态脚本引擎（兼容 QFun 生态）
+- **免框架热插拔**：外部存储放入脚本即时生效，支持标准 **Java 语法**（完整支持 Lambda 表达式与流式 API）。
+- **底层 SSO 协议发包**：内置 `PacketHelper` 与 `MsgSender`，打通底层 MSF 管道，支持构造并投递二进制 Protobuf / OIDB 协议报文。
+- **消息发送全家桶**：支持发送纯文本、图文混排（`@成员`、图片）、Silk 语音（支持精确毫秒时长）、Ark 卡片、短视频、文件、回复特定消息、拍一拍与主动撤回。
+- **全套群管能力**：支持单人/全员禁言与解禁、踢人拉黑、修改群名片、设置/取消管理、设置专属头衔、群打卡、获取群成员列表与禁言列表。
+- **凭证与高清密钥提取**：一键提取 `Skey`、`Pskey`、`Pt4Token`、`GTK`、`bkn`，并自动嗅探捕获聊天原图/高清图 `RKey` 鉴权密钥。
 - **跨会话持久化存储**：提供 `putString`、`getInt`、`putBoolean` 等多类型本地 JSON 键值对读写能力。
+- **预设脚本开箱即用**：支持在项目 `preset_plugins/` 放置脚本或压缩包，构建时自动打包注入，冷启动增量校验解压并自动激活首启。
 
-### 2. AIO 精准感知与交互体系
-- **会话智能感知悬浮球**：仅在进入聊天会话（AIO）时自动显示快捷悬浮球，支持手指自由拖拽与边缘停靠；退出聊天自动隐藏，不干扰正常浏览。
-- **快捷动作弹窗**：点击悬浮球一键呼出当前脚本注册的自定义菜单动作（`addItem`），自动锁定并传递当前会话类型（私聊/群聊）与群号/QQ号。
-- **气泡长按扩展菜单**：支持通过 `addMenuItem` 将自定义功能注入至官方消息气泡长按弹出的上下文菜单中。
+### 3. QQ 原生二级设置中心 (Zzz)
+- **原生顶层挂载**：在 QQ 设置顶层自动挂载 **“Zzz”** 设置与 **“动态脚本”** 双卡片入口。
+- **模块化控制台**：核心功能按需启闭，动态脚本支持独立启停、动作触发、一键重载与全局扫描。
+- **应用内免电脑实时日志监视器**：内置 300 条环形内存日志池，设置内可随时唤出终端风格弹窗查看运行状态，支持一键清空与导出到本地 `latest.log`。
+- **原厂红点联动**：支持与 QQ 原厂 `QUIBadge`（ID: `0x7f0a5eb2`）控件联动，接入版本更新检测。
 
-### 3. 消息防撤回与后台同步保护
-- **实时推送拦截**：拦截私聊和群聊的实时撤回指令（`MsgPush`）。
-- **同步数据过滤**：针对下拉刷新与后台唤醒的同步包（`InfoSyncPush`）进行树形递归过滤，剥离撤回指令并保留同步游标。
-- **自身撤回放行**：当前账号自己在其他设备或本设备发起的撤回操作正常生效。
-- **富文本可交互灰条**：提取撤回人真实 UID、群名片/昵称，撤回人名字支持点击打开资料卡，点击“一条消息”支持定位并高亮原消息。
-- *(注：防撤回核心处理与灰条实现思路参考并致谢 [QFun](https://github.com/oneQAQone/QFun) 项目)*
+### 4. 底层 Native 与反风控对齐
+- **Native 指令原位 Bypass**：针对 arm64-v8a 底层 `libcodecwrapperV2.so` 签名校验精准原位 Patch 跳转。
+- **全套动态查签致盲**：致盲主查签逻辑（`SignatureReport`、`SecMd5Entry`）、阻断启动自检（`SignatureScan`、`CheckSafeCenterConfig`）。
+- **阻断风控打击与转储**：阻断 `MSFIntChkStrike` 完整性惩罚打击、内存篡改转储与通道事件批量上报。
+- **指纹脱敏与签名固化**：脱敏 QSec 设备指纹与云控账号参数，阻断 Beacon 硬件指纹收集与涉诈敏感词扫描；全动态固化官方原版 APK MD5 与签名 Hash。
 
-### 4. 闪照破解与画廊放行
-- **闪照自动解密**：实时推送与消息列表中的闪照转换为普通图片展示，支持长按直接保存。
-- **画廊大图放行**：解除 AIO 画廊对闪照资源的查看与保存限制。
-
-### 5. 喵喵助手
-- **发送文本消息拦截**：自动进行人称词汇替换（“你” -> “主人”、“我” -> “猫猫”），智能识别语气标点与括号并在末尾适配喵化尾缀。
-
-### 6. QQ 原生二级设置中心 (Zzz)
-- 动态在 QQ 原生设置顶层挂载 **“Zzz”** 设置入口。
-- 模块化开关管理：防撤回、闪照破解、悬浮球、喵喵助手独立按需启闭。
-- 动态脚本控制台：支持独立启停脚本、脚本动作触发、一键重载与重新扫描全部脚本。
-- **应用内免电脑实时日志监视器**：内存内置 300 条环形日志缓冲池，设置内可随时唤出弹窗查看实时运行状态，支持一键导出日志到本地存储（`latest.log`）以及快速清空。
-- 接入版本更新检测与 QQ 原厂 `QUIBadge`（ID: `0x7f0a5eb2`）原生红点联动。
-
-### 预设脚本
-
-为了免去在手机上手动创建文件夹并复制脚本的繁琐操作，本项目支持**预设脚本自动化打包**：
-
-1. 将任意脚本放入项目根目录下的 `preset_plugins/` 文件夹中：
-   - **支持文件夹形式**：如 `preset_plugins/快捷动作栏/main.java`
-   - **支持多层嵌套文件夹**：如 `preset_plugins/集合包/快捷动作栏/main.java`
-   - **支持 ZIP 压缩包**：如 `preset_plugins/QuickBar.zip` 或 `preset_plugins/全部插件.zip`
-2. 执行 `python3 patcher.py` 进行构建：
-   - 构建引擎会自动将预设脚本打包为 `assets/preset_plugins.zip` 并注入 APK。
-3. 安装并启动 QQ：
-   - 应用冷启动时将自动校验 CRC、解压并递归展开全部 zip，智能定位含有 `main.java` 的插件根目录，自动安装至手机外部存储 `zzz/plugins/` 目录。
-   - 首次释放的预设脚本会**自动激活开启**，实现真正的“开箱即用”！
-4. **仓库安全保证**：
-   - `.gitignore` 已内置安全过滤规则，你在 `preset_plugins/` 放置的私密脚本、配置与压缩包绝不会被 Git 提交并上传至公共仓库。
 ---
 
 ## 外部脚本存放路径
@@ -168,7 +152,7 @@ pkg install python openjdk-17 d8 apksigner android-tools zip curl -y
 
 ### 步骤 1：拉取构建依赖组件
 
-在项目根目录下执行以下命令，自动下载构建所需的 7 个核心依赖 Jar 包至 `tools/` 目录：
+在项目根目录下执行以下命令，自动下载构建所需的 **8 个核心依赖 Jar 包**至 `tools/` 目录：
 
 ```bash
 mkdir -p tools
@@ -185,6 +169,9 @@ python3 -c "import zipfile, os; open('tools/bsh.jar', 'wb').write(zipfile.ZipFil
 
 curl -L -o tools/dx.jar https://repo1.maven.org/maven2/com/jakewharton/android/repackaged/dalvik-dx/9.0.0_r3/dalvik-dx-9.0.0_r3.jar
 curl -L -o tools/protobuf.jar https://repo1.maven.org/maven2/com/google/protobuf/protobuf-java/3.25.3/protobuf-java-3.25.3.jar
+
+# 3. Android SDK 核心编译期标准桩库 (提供纯净系统符号，不打包进 APK)
+curl -L -o tools/android.jar https://raw.githubusercontent.com/Sable/android-platforms/master/android-30/android.jar
 ```
 
 ---
@@ -229,23 +216,28 @@ python3 patcher.py 我的QQ.apk 输出_已修补.apk
 
 ```text
 QQNT-Patcher/
-├── src/                                  # 扩展功能 Java 源码与 Android 编译桩 (Stubs)
+├── src/                                  # 扩展功能 Java 源码与 QFun 生态环境桩
 │   ├── com/tencent/qqnt/patch/
 │   │   ├── modules/                      # 模块化功能解耦实现
 │   │   │   ├── AntiRevokeModule.java     # 消息防撤回与灰条构造模块
+│   │   │   ├── AutoRemarkApkModule.java  # 发送 APK 自动重命名模块
+│   │   │   ├── AtAllNotifyBlockModule.java# 静默 @全体 与群待办通知模块
 │   │   │   ├── FlashPicModule.java       # 闪照转换与画廊放行模块
 │   │   │   ├── FloatingBallModule.java   # 悬浮球生命周期联动模块
-│   │   │   └── MeowModule.java           # 喵喵助手拦截与改写模块
+│   │   │   ├── MeowModule.java           # 喵喵助手拦截与改写模块
+│   │   │   ├── ShowDownloadTimesModule.java# 群文件下载次数解析展示模块
+│   │   │   └── TabletModeModule.java     # 强制平板模式穿透模块
 │   │   ├── plugin/                       # 动态脚本引擎与 QFun 兼容生态
 │   │   │   ├── AioMenuInjector.java      # AIO 消息气泡长按菜单注入器
 │   │   │   ├── CookieHelper.java         # Token / Skey / Pskey / GTK 获取服务
-│   │   │   ├── FixClassLoader.java       # 脚本动态类与双亲委派加载器
+│   │   │   ├── FixClassLoader.java       # 脚本动态类与双亲委派隔离加载器
 │   │   │   ├── FloatingBallManager.java  # 悬浮球窗口交互与状态感知管理器
 │   │   │   ├── FriendHelper.java         # 好友列表查询与点赞助手
 │   │   │   ├── MsgSender.java            # 底层发包全家桶管道
 │   │   │   ├── PluginCompiler.java       # BeanShell 3 解释器生命周期封装
 │   │   │   ├── PluginManager.java        # 插件热插拔、加载与事件广播中枢
 │   │   │   ├── PluginMethod.java         # 暴露给脚本调用的全局 api 实例
+│   │   │   ├── PresetPluginInstaller.java# 预设脚本自动化解压校验器
 │   │   │   ├── RKeyManager.java          # 高清图片密钥拦截与解析器
 │   │   │   ├── TroopHelper.java          # 群管、禁言与群信息助手
 │   │   │   └── TroopMemberJoinHandler.java# 群成员进群推送解析器
@@ -253,22 +245,30 @@ QQNT-Patcher/
 │   │   ├── ConfigManager.java            # 配置持久化与运行时标记缓存
 │   │   ├── IPatchModule.java             # 模块化统一生命周期接口
 │   │   ├── ModuleManager.java            # 核心功能模块注册与调度管理器
+│   │   ├── NativeSettingHelper.java      # QQ 原生双行/单行设置项反射辅助类
 │   │   ├── PatchBridge.java              # 字节码直接调用的全局桩分发桥梁
 │   │   ├── PLog.java                     # 内存环形日志监视器与应用内调试弹窗
 │   │   ├── QUIBadgeHelper.java           # QQ 原厂 QUIBadge 红点控件联动
 │   │   ├── SettingInjector.java          # QQ 设置中心顶层入口动态挂载
+│   │   ├── ToastHelper.java              # 快速弹出/重叠中断 Toast 工具
 │   │   ├── UpdateHelper.java             # 版本更新静默检测与手动检测逻辑
 │   │   └── ZzzSettingFragment.java       # Zzz 二级原生设置中心界面
 │   └── me/yxp/qfun/                      # QFun 脚本生态标准实体与环境桩
 ├── rules/                                # 声明式 Hook 规则与特征探测模块
 │   ├── __init__.py                       # 规则入口调度与设置动态挂载导出
-│   ├── base_rules.py                     # 14 条核心扩展与分流规则
+│   ├── base_rules.py                     # 核心扩展与分流规则
+│   ├── group_file_rules.py               # 群文件下载次数全版本自适应规则引擎
 │   ├── parser.py                         # FastDexParser DEX 内存流式语义扫描引擎
 │   ├── security_rules.py                 # 全套动态防反外挂、防篡改、风控对齐规则
-│   └── stubs.py                          # Smali 汇编空桩与重定向工厂
+│   ├── setting_rules.py                  # 设置中心动态挂载规则引擎
+│   ├── stubs.py                          # Smali 汇编空桩与重定向工厂
+│   ├── tablet_rules.py                   # 平板模式动态穿透规则引擎
+│   └── troop_todo_rules.py               # 群待办强提醒动态规则引擎
 ├── assets/
+│   ├── script_icon.png                   # 动态脚本设置入口图标
 │   └── zzz_icon.png                      # 设置入口与悬浮球图标静态资源
 ├── tools/                                # 构建依赖工具链与固定签名证书
+│   ├── android.jar                       # Android SDK 编译期标准桩库 (API 30)
 │   ├── baksmali.jar                      # Dex 字节码反汇编引擎
 │   ├── smali.jar                         # Smali 汇编器
 │   ├── dexlib2.jar                       # Dex 局部重构 AST 引擎
@@ -277,7 +277,8 @@ QQNT-Patcher/
 │   ├── dx.jar                            # 字节码转译编译器
 │   ├── protobuf.jar                      # 二进制 Protobuf 协议支持
 │   └── debug.keystore                    # 固定签名证书 (首次自动生成)
-├── DexPatcher.java                       # DEX 内存 AST 多线程批量修补引擎
+├── DexPatcher.java                       # DEX 纯内存流式 AST 多线程批量编译修补引擎
+├── native_patcher.py                     # arm64-v8a Native SO 二进制跳转原位修补器
 ├── patcher.py                            # 核心自动化构建执行与调度脚本
 └── README.md
 ```
