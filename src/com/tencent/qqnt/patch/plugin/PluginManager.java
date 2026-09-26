@@ -57,6 +57,8 @@ public class PluginManager {
         public File dir;
         public boolean isEnabled;
         public boolean isRunning;
+        public boolean hasHook = false;
+        public String subName = "";
         public Map<String, String> menuItems = new LinkedHashMap<>();
     }
 
@@ -65,7 +67,6 @@ public class PluginManager {
         sInitialized = true;
         PLog.i("Plugin", "收到引擎初始化指令，开始载入插件...");
 
-        // ★ 核心注入：在扫描加载前自动释放预设脚本包
         try {
             PresetPluginInstaller.install(context);
         } catch (Throwable t) {
@@ -105,6 +106,12 @@ public class PluginManager {
                         } catch (Throwable ignored) {}
                     }
 
+                    // ★ 自动智能探测：如果脚本包含 Hook，则生成第二行提醒标注
+                    if (detectPluginUsesHook(dir)) {
+                        item.hasHook = true;
+                        item.subName = "注意：包含动态Hook，免框架模式下可能失效或仅部分可用";
+                    }
+
                     for (PluginCompiler compiler : sLoadedPlugins) {
                         if (item.id.equals(compiler.getPluginId()) && compiler.isRunning()) {
                             item.isRunning = true;
@@ -119,11 +126,36 @@ public class PluginManager {
         return items;
     }
 
+    private static boolean detectPluginUsesHook(File dir) {
+        if (dir == null || !dir.isDirectory()) return false;
+        File[] files = dir.listFiles();
+        if (files == null) return false;
+        for (File f : files) {
+            if (f.isFile() && f.getName().endsWith(".java")) {
+                try (FileInputStream fis = new FileInputStream(f)) {
+                    byte[] buf = new byte[(int) Math.min(f.length(), 65536)];
+                    int len = fis.read(buf);
+                    if (len > 0) {
+                        String content = new String(buf, 0, len, StandardCharsets.UTF_8);
+                        if (content.contains("HookExtensionsKt") ||
+                            content.contains("hookBefore") ||
+                            content.contains("hookAfter") ||
+                            content.contains("de.robv.android.xposed") ||
+                            content.contains("XposedBridge") ||
+                            content.contains("XposedHelpers")) {
+                            return true;
+                        }
+                    }
+                } catch (Throwable ignored) {}
+            }
+        }
+        return false;
+    }
+
     public static void setPluginActive(final Context context, final String pluginId, final boolean enabled) {
         setPluginActive(context, pluginId, enabled, null);
     }
 
-    // ★ 支持传入完成回调：脚本真正启动完毕/入口注入成功后，精准回调主线程
     public static void setPluginActive(final Context context, final String pluginId, final boolean enabled, final Runnable onComplete) {
         ConfigManager.setPluginEnabled(pluginId, enabled);
         sWorkerPool.execute(() -> {
@@ -133,16 +165,12 @@ public class PluginManager {
                     File dir = new File(pluginsDir, pluginId);
                     if (dir.isDirectory() && new File(dir, "main.java").exists()) {
                         ClassLoader bshLoader = getOrCreateBshClassLoader(context);
-                        if (bshLoader != null) {
-                            PluginCompiler compiler = new PluginCompiler(context, dir, bshLoader);
-                            if (compiler.start()) {
-                                sLoadedPlugins.add(compiler);
-                                PLog.i("Plugin", "动态开启脚本成功: " + pluginId);
-                            } else {
-                                PLog.e("Plugin", "动态开启脚本失败: " + pluginId);
-                            }
+                        PluginCompiler compiler = new PluginCompiler(context, dir, bshLoader);
+                        if (compiler.start()) {
+                            sLoadedPlugins.add(compiler);
+                            PLog.i("Plugin", "动态开启脚本成功: " + pluginId);
                         } else {
-                            PLog.e("Plugin", "动态开启脚本失败: 引擎 ClassLoader 为空");
+                            PLog.e("Plugin", "动态开启脚本失败: " + pluginId);
                         }
                     }
                 } else {
@@ -303,7 +331,6 @@ public class PluginManager {
                 return null;
             }
 
-            // Android 14/15/16 优先内存加载
             try {
                 Class<?> inMemoryClz = Class.forName("dalvik.system.InMemoryDexClassLoader");
                 Constructor<?> inMemCtor = inMemoryClz.getConstructor(ByteBuffer.class, ClassLoader.class);
@@ -367,17 +394,12 @@ public class PluginManager {
         reloadAll(context, null);
     }
 
-    // ★ 重载方法同样支持完成监听回调
     public static void reloadAll(final Context context, final Runnable onComplete) {
         PLog.i("Plugin", "正在重新扫描与重载全部脚本...");
         sWorkerPool.execute(() -> {
             try {
                 stopAllPlugins();
                 ClassLoader loader = getOrCreateBshClassLoader(context);
-                if (loader == null) {
-                    PLog.e("Plugin", "重载中止: bsh 解释器 ClassLoader 为 null");
-                    return;
-                }
 
                 File pluginsDir = getPluginsStorageDir(context);
                 if (!pluginsDir.exists()) pluginsDir.mkdirs();

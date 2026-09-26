@@ -114,9 +114,11 @@ public class ZzzSettingFragment {
                     for (PluginManager.PluginItem item : allPlugins) {
                         final String pId = item.id;
                         final String pName = item.name;
+                        // ★ 核心改动：如果有第二行提示（包含 Hook），则传入副标题触发双行展示
+                        final String pSub = (item.subName != null && !item.subName.isEmpty()) ? item.subName : null;
 
                         pluginItems.add(NativeSettingHelper.createSwitch(
-                                cl, pName + " (" + pId + ")", item.isEnabled,
+                                cl, pName + " (" + pId + ")", pSub, item.isEnabled,
                                 (btn, checked) -> {
                                     ToastHelper.show(activity, pName + (checked ? " 正在启动..." : " 正在停止..."));
                                     PluginManager.setPluginActive(activity, pId, checked, () -> {
