@@ -44,36 +44,8 @@ public class AntiRevokeModule implements IPatchModule {
             })
     );
 
-    // 日志去重缓存，杜绝重复刷屏
-    private static final Set<Long> sPrintedMsgIds = Collections.synchronizedSet(
-            Collections.newSetFromMap(new LinkedHashMap<Long, Boolean>(50, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<Long, Boolean> eldest) {
-                    return size() > 100;
-                }
-            })
-    );
-
     @Override
-    public void onRecvMsg(List<MsgRecord> msgList) {
-        if (msgList == null || msgList.isEmpty()) return;
-        for (MsgRecord r : msgList) {
-            if (r == null || r.msgId == 0) continue;
-            if (!sPrintedMsgIds.add(r.msgId)) continue; // ★ 去重过滤，相同消息只打一次
-
-            String text = "";
-            if (r.elements != null) {
-                for (MsgElement elem : r.elements) {
-                    if (elem != null && elem.textElement != null && elem.textElement.content != null) {
-                        text = elem.textElement.content;
-                        break;
-                    }
-                }
-            }
-            if (text.length() > 15) text = text.substring(0, 15) + "...";
-            PLog.d("AIO-Msg", "收到消息: seq=" + r.msgSeq + ", msgId=" + r.msgId + ", chatType=" + r.chatType + (text.isEmpty() ? "" : ", txt=" + text));
-        }
-    }
+    public void onRecvMsg(List<MsgRecord> msgList) {}
 
     @Override
     public byte[] onMsfPush(IQQNTWrapperSession session, String cmd, byte[] buf) {
@@ -349,13 +321,6 @@ public class AntiRevokeModule implements IPatchModule {
         }
     }
 
-    private static class GroupRecallPayload {
-        String groupCode = "";
-        String operatorUid = "";
-        String senderUid = "";
-        long msgSeq = 0L;
-    }
-
     private static boolean processRecall(IQQNTWrapperSession session, byte[] buf, int revokeType) {
         if (session == null) return false;
         IKernelMsgService msgService = session.getMsgService();
@@ -372,59 +337,81 @@ public class AntiRevokeModule implements IPatchModule {
         if (opBytes == null || opBytes.length == 0) return false;
 
         String selfUid = Proto.getString(headerBytes, 6);
+        String myUin = MsgSender.getMyUin();
 
         if (revokeType == 1) {
-            GroupRecallPayload payload = parseGroupRecall(headerBytes, opBytes);
+            long groupUin = Proto.getVarint(opBytes, 4);
+            String groupCode = (groupUin > 0) ? String.valueOf(groupUin) : Proto.getString(headerBytes, 2);
 
-            // 本人主动撤回自己的消息，直接放行
-            if (selfUid != null && !selfUid.isEmpty() && selfUid.equals(payload.operatorUid) && (payload.senderUid.isEmpty() || payload.senderUid.equals(selfUid))) {
-                PLog.d(TAG, "本人主动撤回自己的消息，放行生效");
-                return true;
+            String operatorUid = "";
+            String senderUid = "";
+            long msgSeq = 0L;
+
+            byte[] tag11 = Proto.getBytes(opBytes, 11);
+            if (tag11 != null) {
+                operatorUid = Proto.getString(tag11, 1);
+                byte[] tag3 = Proto.getBytes(tag11, 3);
+                if (tag3 != null) {
+                    msgSeq = Proto.getVarint(tag3, 1);    // 真实 msgSeq
+                    senderUid = Proto.getString(tag3, 6); // 成员 UID
+                }
             }
 
-            if (payload.groupCode.isEmpty()) return false;
+            if (msgSeq == 0) msgSeq = Proto.getVarint(opBytes, 37);
+            if (operatorUid.isEmpty()) operatorUid = findFirstUidSafe(opBytes);
 
-            String cacheKey = "grp_" + payload.groupCode + "_seq_" + payload.msgSeq;
-            if (payload.msgSeq > 0 && !sRevokedCache.add(cacheKey)) {
+            // 只有自己撤回自己的消息，才放行
+            if (selfUid != null && !selfUid.isEmpty() && selfUid.equals(operatorUid)) {
+                if (senderUid.isEmpty() || senderUid.equals(selfUid)) {
+                    PLog.d(TAG, "本人主动撤回自己的消息，放行生效");
+                    return true;
+                }
+            }
+
+            if (groupCode.isEmpty()) return false;
+
+            String cacheKey = "grp_" + groupCode + "_seq_" + msgSeq;
+            if (msgSeq > 0 && !sRevokedCache.add(cacheKey)) {
                 return false;
             }
 
-            String opUin = getUin(payload.operatorUid);
-            String opNick = getUserNickName(payload.operatorUid, opUin);
+            String opUin = getUin(operatorUid);
+            String opNick = getUserNickName(operatorUid, opUin);
 
             String json;
-            if (!payload.senderUid.isEmpty() && !payload.senderUid.equals(payload.operatorUid)) {
-                // 管理员代撤回
-                String senderUin = getUin(payload.senderUid);
-                String senderNick = getUserNickName(payload.senderUid, senderUin);
-                PLog.i(TAG, "拦截[管理代撤回]: 群=" + payload.groupCode + ", 管理=" + opNick + ", 成员=" + senderNick + ", seq=" + payload.msgSeq);
-                json = buildGroupAdminRecallJson(payload.operatorUid, opUin, opNick, payload.senderUid, senderUin, senderNick, payload.msgSeq);
+            if (!senderUid.isEmpty() && !senderUid.equals(operatorUid)) {
+                // ★ 判定被撤回的原作者是否为当前账号自己
+                boolean isSenderSelf = (selfUid != null && !selfUid.isEmpty() && selfUid.equals(senderUid));
+                String senderUin = getUin(senderUid);
+                if (!isSenderSelf && myUin != null && !myUin.isEmpty() && myUin.equals(senderUin)) {
+                    isSenderSelf = true;
+                }
+
+                String senderNick = isSenderSelf ? "我" : getUserNickName(senderUid, senderUin);
+                PLog.i(TAG, "拦截[管理代撤回]: 群=" + groupCode + ", 管理=" + opNick + ", 成员=" + senderNick + ", seq=" + msgSeq);
+                json = buildGroupAdminRecallJson(operatorUid, opUin, opNick, senderUid, senderUin, senderNick, msgSeq, isSenderSelf);
             } else {
-                // 成员正常撤回
-                PLog.i(TAG, "拦截[群成员撤回]: 群=" + payload.groupCode + ", 人员=" + opNick + ", seq=" + payload.msgSeq);
-                json = buildGroupClickableJson(payload.operatorUid, opUin, opNick, payload.msgSeq);
+                PLog.i(TAG, "拦截[群成员撤回]: 群=" + groupCode + ", 人员=" + opNick + ", seq=" + msgSeq);
+                json = buildGroupClickableJson(operatorUid, opUin, opNick, msgSeq);
             }
 
-            Contact contact = new Contact(2, payload.groupCode, "");
+            Contact contact = new Contact(2, groupCode, "");
             JsonGrayElement grayElement = new JsonGrayElement(BUSI_ID_GROUP, json, "", false, null);
             msgService.addLocalJsonGrayTipMsg(contact, grayElement, true, true, null);
 
         } else if (revokeType == 2) {
-            byte[] infoBytes = Proto.getBytes(opBytes, 1);
-            String operatorUid = infoBytes != null ? Proto.getString(infoBytes, 1) : "";
+            String operatorUid = "";
+            long msgSeq = 0L;
+
+            byte[] tag1 = Proto.getBytes(opBytes, 1);
+            if (tag1 != null) {
+                operatorUid = Proto.getString(tag1, 1);
+                msgSeq = Proto.getVarint(tag1, 20);
+            }
             if (operatorUid.isEmpty()) operatorUid = Proto.getString(headerBytes, 2);
 
             if (selfUid != null && !selfUid.isEmpty() && selfUid.equals(operatorUid)) {
                 return true;
-            }
-
-            // 私聊提取 Tag 20 (444)
-            long msgSeq = infoBytes != null ? Proto.getVarint(infoBytes, 20) : 0L;
-            if (msgSeq == 0 && infoBytes != null) {
-                msgSeq = Proto.getVarint(infoBytes, 2);
-            }
-            if (msgSeq == 0) {
-                msgSeq = findC2CSeqByContext(opBytes);
             }
 
             if (operatorUid.isEmpty()) return false;
@@ -442,110 +429,6 @@ public class AntiRevokeModule implements IPatchModule {
             msgService.addLocalJsonGrayTipMsg(contact, grayElement, true, true, null);
         }
         return false;
-    }
-
-    private static GroupRecallPayload parseGroupRecall(byte[] headerBytes, byte[] opBytes) {
-        GroupRecallPayload result = new GroupRecallPayload();
-
-        // 1. 群号优先提取
-        long groupUin = Proto.getVarint(opBytes, 4);
-        if (groupUin > 0) {
-            result.groupCode = String.valueOf(groupUin);
-        } else {
-            String gStr = Proto.getString(headerBytes, 2);
-            if (gStr.isEmpty()) {
-                long gVal = Proto.getVarint(headerBytes, 1);
-                if (gVal > 0) gStr = String.valueOf(gVal);
-            }
-            result.groupCode = gStr;
-        }
-
-        // 2. 真实可定位的群聊 seq 是 4715 那一路！
-        long candidateSeq = Proto.getVarint(opBytes, 48);
-        if (candidateSeq > 0) {
-            result.msgSeq = candidateSeq;
-        }
-
-        // 3. 稳健上下文递归提取所有 UID 与 seq
-        findRecallInfoBySmartScan(opBytes, result);
-
-        if (result.operatorUid.isEmpty()) {
-            result.operatorUid = findFirstUidSafe(opBytes);
-        }
-
-        return result;
-    }
-
-    private static void findRecallInfoBySmartScan(byte[] data, GroupRecallPayload out) {
-        if (data == null || data.length < 10) return;
-        ProtoReader reader = new ProtoReader(data);
-        long lastSeqCandidate = 0L;
-
-        while (reader.hasMore()) {
-            long tag = reader.readVarint();
-            int wire = (int) (tag & 7);
-
-            if (wire == 0) {
-                long val = reader.readVarint();
-                if (val >= 1500000000L && val <= 2050000000L) {
-                    if (out.msgSeq == 0 && lastSeqCandidate > 0 && lastSeqCandidate < 500000000L) {
-                        out.msgSeq = lastSeqCandidate;
-                    }
-                } else if (val > 0 && val < 500000000L && val != 732 && val != 528 && val != 17 && val != 138) {
-                    lastSeqCandidate = val;
-                }
-            } else if (wire == 1) {
-                reader.skip(8);
-            } else if (wire == 2) {
-                byte[] sub = reader.readBytes();
-                if (sub != null && sub.length > 0) {
-                    String str = tryAsciiString(sub);
-                    if (str != null && str.startsWith("u_")) {
-                        if (out.operatorUid.isEmpty()) {
-                            out.operatorUid = str; // 第一个出现的必是操作人
-                        } else if (!str.equals(out.operatorUid) && out.senderUid.isEmpty()) {
-                            out.senderUid = str;   // 第二个出现的必是被撤回原作者
-                        }
-                    }
-                    findRecallInfoBySmartScan(sub, out);
-                }
-            } else if (wire == 5) {
-                reader.skip(4);
-            } else {
-                break;
-            }
-        }
-    }
-
-    private static long findC2CSeqByContext(byte[] data) {
-        if (data == null || data.length < 5) return 0L;
-        ProtoReader reader = new ProtoReader(data);
-        long lastVal = 0L;
-        while (reader.hasMore()) {
-            long tag = reader.readVarint();
-            int wire = (int) (tag & 7);
-            if (wire == 0) {
-                long val = reader.readVarint();
-                if (val >= 1500000000L && val <= 2050000000L) {
-                    if (lastVal > 0 && lastVal < 500000000L) return lastVal;
-                } else if (val > 0 && val < 500000000L) {
-                    lastVal = val;
-                }
-            } else if (wire == 1) {
-                reader.skip(8);
-            } else if (wire == 2) {
-                byte[] sub = reader.readBytes();
-                if (sub != null && sub.length > 0) {
-                    long s = findC2CSeqByContext(sub);
-                    if (s > 0) return s;
-                }
-            } else if (wire == 5) {
-                reader.skip(4);
-            } else {
-                break;
-            }
-        }
-        return 0L;
     }
 
     private static String findFirstUidSafe(byte[] data) {
@@ -608,11 +491,10 @@ public class AntiRevokeModule implements IPatchModule {
         StringBuilder sb = new StringBuilder();
         sb.append("{\"align\":\"center\",\"items\":[");
         String displayNick = escapeJson(nickName);
-        String uinVal = (uin != null && !uin.isEmpty()) ? uin : "";
-        String jpVal = (!uinVal.isEmpty()) ? uinVal : operatorUid;
+        String uinVal = (uin != null) ? uin : "";
 
-        sb.append("{\"col\":\"3\",\"jp\":\"").append(jpVal).append("\",\"nm\":\"").append(displayNick)
-          .append("\",\"tp\":\"1\",\"type\":\"qq\",\"uid\":\"").append(operatorUid).append("\",\"uin\":\"").append(uinVal).append("\"},");
+        sb.append("{\"col\":\"3\",\"jp\":\"").append(operatorUid).append("\",\"nm\":\"").append(displayNick)
+          .append("\",\"tp\":\"0\",\"type\":\"qq\",\"uid\":\"").append(operatorUid).append("\",\"uin\":\"").append(uinVal).append("\"},");
         sb.append("{\"txt\":\" 尝试撤回 \",\"type\":\"nor\"},");
         sb.append("{\"col\":\"3\",\"local_jp\":58,");
         if (msgSeq > 0) sb.append("\"param\":{\"seq\":\"").append(msgSeq).append("\"},");
@@ -623,27 +505,26 @@ public class AntiRevokeModule implements IPatchModule {
     }
 
     private static String buildGroupAdminRecallJson(String opUid, String opUin, String opNick,
-                                                    String senderUid, String senderUin, String senderNick, long msgSeq) {
+                                                    String senderUid, String senderUin, String senderNick,
+                                                    long msgSeq, boolean isSenderSelf) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\"align\":\"center\",\"items\":[");
 
-        String opUinVal = (opUin != null && !opUin.isEmpty()) ? opUin : "";
-        String opJp = (!opUinVal.isEmpty()) ? opUinVal : opUid;
-
-        String senderUinVal = (senderUin != null && !senderUin.isEmpty()) ? senderUin : "";
-        String senderJp = (!senderUinVal.isEmpty()) ? senderUinVal : senderUid;
-
-        // 1. 操作人 (管理员/群主) -> tp: "1" 群名片点击
-        sb.append("{\"col\":\"3\",\"jp\":\"").append(opJp).append("\",\"nm\":\"").append(escapeJson(opNick))
-          .append("\",\"tp\":\"1\",\"type\":\"qq\",\"uid\":\"").append(opUid).append("\",\"uin\":\"").append(opUinVal).append("\"},");
+        // 1. 操作人 (管理员/群主) -> 高亮且可点击
+        sb.append("{\"col\":\"3\",\"jp\":\"").append(opUid).append("\",\"nm\":\"").append(escapeJson(opNick))
+          .append("\",\"tp\":\"0\",\"type\":\"qq\",\"uid\":\"").append(opUid).append("\",\"uin\":\"").append(opUin != null ? opUin : "").append("\"},");
         sb.append("{\"txt\":\" 尝试撤回 \",\"type\":\"nor\"},");
 
-        // 2. 原发送者 (被撤回成员) -> tp: "1" 群名片点击
-        sb.append("{\"col\":\"3\",\"jp\":\"").append(senderJp).append("\",\"nm\":\"").append(escapeJson(senderNick))
-          .append("\",\"tp\":\"1\",\"type\":\"qq\",\"uid\":\"").append(senderUid).append("\",\"uin\":\"").append(senderUinVal).append("\"},");
+        // 2. 原发送者 -> 若是自己，直接作为普通文本“我”；若是他人，保留高亮点击
+        if (isSenderSelf) {
+            sb.append("{\"txt\":\"我\",\"type\":\"nor\"},");
+        } else {
+            sb.append("{\"col\":\"3\",\"jp\":\"").append(senderUid).append("\",\"nm\":\"").append(escapeJson(senderNick))
+              .append("\",\"tp\":\"0\",\"type\":\"qq\",\"uid\":\"").append(senderUid).append("\",\"uin\":\"").append(senderUin != null ? senderUin : "").append("\"},");
+        }
         sb.append("{\"txt\":\" 的 \",\"type\":\"nor\"},");
 
-        // 3. 一条消息 (跳转高亮)
+        // 3. 一条消息 -> 瞬移跳转定位高亮
         sb.append("{\"col\":\"3\",\"local_jp\":58,");
         if (msgSeq > 0) sb.append("\"param\":{\"seq\":\"").append(msgSeq).append("\"},");
         else sb.append("\"param\":{},");
@@ -761,7 +642,7 @@ public class AntiRevokeModule implements IPatchModule {
                 } else if (wire == 1) {
                     reader.skip(8);
                 } else if (wire == 2) {
-                    reader.readBytes();
+                    reader.skip(reader.readBytes() != null ? 0 : 0);
                 } else if (wire == 5) {
                     reader.skip(4);
                 } else {
