@@ -5,6 +5,8 @@ preset_plugins/*
 !preset_plugins/.gitkeep
 !preset_plugins/README.md
 
+apk_meta_cache.json
+
 *.apk
 build_cache/
 tools/

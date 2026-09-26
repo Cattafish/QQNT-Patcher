@@ -11,6 +11,7 @@ import shlex
 import struct
 import time
 import hashlib
+import json
 import rules
 import native_patcher
 
@@ -149,7 +150,32 @@ def pack_preset_plugins_if_exist(work_dir):
     log("OK", f"  -> 预设脚本包封装完成: \033[36m{os.path.getsize(target_zip)} 字节\033[0m")
     return target_zip
 
-def extract_original_apk_metadata(input_apk):
+def extract_original_apk_metadata(input_apk, work_dir):
+    cache_file = os.path.join(work_dir, "apk_meta_cache.json")
+    apk_stat = os.stat(input_apk)
+    curr_mtime = apk_stat.st_mtime
+    curr_size = apk_stat.st_size
+    abs_apk_path = os.path.abspath(input_apk)
+
+    # 1. 尝试从缓存读取
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as cf:
+                cache_data = json.load(cf)
+            if (cache_data.get("apk_path") == abs_apk_path and 
+                cache_data.get("mtime") == curr_mtime and 
+                cache_data.get("size") == curr_size):
+                log("INFO", "0. 命中官方原包指纹缓存，秒级复用...")
+                orig_apk_md5 = cache_data.get("apk_md5", "")
+                orig_sig_md5 = cache_data.get("sig_md5", "")
+                log("OK", f"  -> 原版 APK MD5 : \033[36m{orig_apk_md5}\033[0m (缓存)")
+                if orig_sig_md5:
+                    log("OK", f"  -> 原版 签名 MD5: \033[36m{orig_sig_md5}\033[0m (缓存)")
+                return orig_apk_md5, orig_sig_md5
+        except Exception:
+            pass
+
+    # 2. 缓存未命中，全量解析
     log("INFO", "0. 正在提取官方原包特征指纹...")
     h = hashlib.md5()
     with open(input_apk, "rb") as f:
@@ -174,6 +200,20 @@ def extract_original_apk_metadata(input_apk):
 
     if orig_sig_md5:
         log("OK", f"  -> 原版 签名 MD5: \033[36m{orig_sig_md5}\033[0m")
+
+    # 3. 写入缓存文件
+    try:
+        with open(cache_file, "w", encoding="utf-8") as cf:
+            json.dump({
+                "apk_path": abs_apk_path,
+                "mtime": curr_mtime,
+                "size": curr_size,
+                "apk_md5": orig_apk_md5,
+                "sig_md5": orig_sig_md5
+            }, cf)
+    except Exception:
+        pass
+
     return orig_apk_md5, orig_sig_md5
 
 def compile_helper_dex_incremental(work_dir):
@@ -365,10 +405,11 @@ def main():
         log("ERR", f"未找到输入 APK 文件: {input_apk}")
         sys.exit(1)
 
-    orig_apk_md5, orig_sig_md5 = extract_original_apk_metadata(input_apk)
-
     work_dir = "./build_cache"
     os.makedirs(work_dir, exist_ok=True)
+
+    # 阶段 0：提取原包元数据（已增加状态比对与缓存机制）
+    orig_apk_md5, orig_sig_md5 = extract_original_apk_metadata(input_apk, work_dir)
 
     t0 = time.time()
     log("INFO", "1. 正在准备构建环境与扩展 Dex...")
@@ -564,8 +605,17 @@ def main():
     else:
         log("INFO", "5. 跳过 APK 签名 (--no-sign)")
 
-    # 关键修复：将各中间产物与预编译 Dex 加入保留白名单，避免每次误删触发重构
-    keep_list = {"patcher_bin", "dex_out", "bin", "bsh.dex", "bsh_dex", "libs_cached.dex", "preset_plugins.zip"}
+    # 关键修复：加入 apk_meta_cache.json 防止指纹缓存被误删
+    keep_list = {
+        "patcher_bin", 
+        "dex_out", 
+        "bin", 
+        "bsh.dex", 
+        "bsh_dex", 
+        "libs_cached.dex", 
+        "preset_plugins.zip",
+        "apk_meta_cache.json"
+    }
     for f in os.listdir(work_dir):
         if f not in keep_list:
             p = os.path.join(work_dir, f)
